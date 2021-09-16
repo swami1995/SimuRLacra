@@ -761,6 +761,46 @@ def create_default_randomizer_wambic() -> DomainRandomizer:
     )
 
 
+@default_randomizer("pyrado.environments.mujoco.openai_hopper", "HopperSim")
+def create_default_randomizer_hopper() -> DomainRandomizer:
+    """
+    Create the default randomizer for the MuJoCo-based `HopperSim`.
+
+    :return: randomizer based on the nominal domain parameter values
+    """
+    return create_default_randomizer_hopper_epsilon(0.2)
+
+
+def create_default_randomizer_hopper_epsilon(epsilon: float) -> DomainRandomizer:
+    """
+    Create a randomizer for the MuJoCo-based `HopperSim` whichs domain parameter ranges are controlled by a
+    scalar factor.
+
+    :return: randomizer based on the nominal domain parameter values
+    """
+    from pyrado.environments.mujoco.openai_hopper import HopperSim
+
+    dp_nom = HopperSim.get_nominal_domain_param()
+    return DomainRandomizer(
+        NormalDomainParam(
+            name="state_bound",
+            mean=dp_nom["state_bound"],
+            std=dp_nom["state_bound"] / 5,
+            clip_lo=1e-3,
+        ),
+        UniformDomainParam(
+            name="z_lower_bound",
+            mean=dp_nom["z_lower_bound"],
+            halfspan=0.3 * epsilon,
+        ),
+        UniformDomainParam(
+            name="foot_friction_coeff",
+            mean=dp_nom["foot_friction_coeff"],
+            halfspan=0.3 * epsilon * dp_nom["foot_friction_coeff"],
+        ),
+    )
+
+
 @default_randomizer("pyrado.environments.mujoco.openai_ant", "AntSim")
 def create_default_randomizer_ant() -> DomainRandomizer:
     """
