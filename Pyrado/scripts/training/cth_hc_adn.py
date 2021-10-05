@@ -27,14 +27,14 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 """
-Train an agent to solve the Hopper environment using Activation Dynamics Networks and Hill Climbing.
+Train an agent to solve the Half-Cheetah environment using Activation Dynamics Networks and Hill Climbing.
 """
 import torch as to
 
 import pyrado
 from pyrado.algorithms.episodic.hc import HCNormal
 from pyrado.environment_wrappers.action_normalization import ActNormWrapper
-from pyrado.environments.mujoco.openai_hopper import HopperSim
+from pyrado.environments.mujoco.openai_half_cheetah import HalfCheetahSim
 from pyrado.logger.experiment import save_dicts_to_yaml, setup_experiment
 from pyrado.policies.recurrent.adn import ADNPolicy, pd_cubic
 from pyrado.utils.argparser import get_argparser
@@ -45,14 +45,14 @@ if __name__ == "__main__":
     args = get_argparser().parse_args()
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(HopperSim.name, f"{HCNormal.name}_{ADNPolicy.name}")
+    ex_dir = setup_experiment(HalfCheetahSim.name, f"{HCNormal.name}_{ADNPolicy.name}")
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
 
     # Environment
     env_hparam = dict()
-    env = HopperSim(**env_hparam)
+    env = HalfCheetahSim(**env_hparam)
     env = ActNormWrapper(env)
 
     # Policy
@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     # Algorithm
     algo_hparam = dict(
-        max_iter=100,
+        max_iter=50,
         pop_size=10 * policy.num_param,
         num_init_states_per_domain=1,
         expl_factor=1.05,

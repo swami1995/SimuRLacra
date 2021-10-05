@@ -82,7 +82,7 @@ def pd_capacity_21(p: to.Tensor, s: to.Tensor, h: to.Tensor, tau: to.Tensor, **k
     $\tau \dot{p} =  s - (h - p) (1 - \frac{(h - p)^2}{C^2})$
 
     .. note::
-        Intended to be used with sigmoid activation function, e.g. for the position tasks in RcsPySim.
+        Intended but not restricted to be used with sigmoid activation function, e.g. for the position tasks in RcsPySim.
 
     :param p: potential, higher values lead to higher activations
     :param s: stimulus, higher values lead to larger changes of the potentials (depends on the dynamics function)
@@ -104,7 +104,7 @@ def pd_capacity_21_abs(p: to.Tensor, s: to.Tensor, h: to.Tensor, tau: to.Tensor,
     The "absolute version" of `pd_capacity_21` has a lower magnitude and a lower oder of the resulting polynomial.
 
     .. note::
-        Intended to be used with sigmoid activation function, e.g. for the position tasks in RcsPySim.
+        Intended but not restricted to be used with sigmoid activation function, e.g. for the position tasks in RcsPySim.
 
     :param p: potential, higher values lead to higher activations
     :param s: stimulus, higher values lead to larger changes of the potentials (depends on the dynamics function)
@@ -124,7 +124,7 @@ def pd_capacity_32(p: to.Tensor, s: to.Tensor, h: to.Tensor, tau: to.Tensor, **k
     $\tau \dot{p} =  s - (h - p) (1 - \frac{(h - p)^2}{C^2}) (1 - \frac{(2(h - p))^2}{C^2})$
 
     .. note::
-        Intended to be used with tanh activation function, e.g. for the velocity tasks in RcsPySim.
+        Intended but not restricted to be used with tanh activation function, e.g. for the velocity tasks in RcsPySim.
 
     :param p: potential, higher values lead to higher activations
     :param s: stimulus, higher values lead to larger changes of the potentials (depends on the dynamics function)
@@ -152,7 +152,7 @@ def pd_capacity_32_abs(p: to.Tensor, s: to.Tensor, h: to.Tensor, tau: to.Tensor,
     The "absolute version" of `pd_capacity_32` is less skewed due to a lower oder of the resulting polynomial.
 
     .. note::
-        Intended to be used with tanh activation function, e.g. for the velocity tasks in RcsPySim.
+        Intended but not restricted to be used with tanh activation function, e.g. for the velocity tasks in RcsPySim.
 
     :param p: potential, higher values lead to higher activations
     :param s: stimulus, higher values lead to larger changes of the potentials (depends on the dynamics function)

@@ -27,21 +27,17 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 """
-Train an agent to solve the Hopper environment using Proximal Policy Optimization.
+Train an agent to solve the Hopper environment using Activation Dynamics Networks and Hill Climbing.
 """
 import torch as to
 
 import pyrado
-from pyrado.algorithms.step_based.gae import GAE
-from pyrado.algorithms.step_based.ppo import PPO
+from pyrado.algorithms.episodic.hc import HCNormal
 from pyrado.environment_wrappers.action_normalization import ActNormWrapper
 from pyrado.environments.mujoco.openai_hopper import HopperSim
 from pyrado.logger.experiment import save_dicts_to_yaml, setup_experiment
-from pyrado.policies.feed_back.fnn import FNNPolicy
-from pyrado.policies.recurrent.neural_fields import NFPolicy
-from pyrado.spaces import ValueFunctionSpace
+from pyrado.policies.recurrent.adn import ADNPolicy, pd_cubic, pd_capacity_32_abs, pd_capacity_21_abs
 from pyrado.utils.argparser import get_argparser
-from pyrado.utils.data_types import EnvSpec
 
 
 if __name__ == "__main__":
@@ -49,7 +45,7 @@ if __name__ == "__main__":
     args = get_argparser().parse_args()
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(HopperSim.name, f"{PPO.name}_{NFPolicy.name}")
+    ex_dir = setup_experiment(HopperSim.name, f"{HCNormal.name}_{ADNPolicy.name}")
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
@@ -61,58 +57,34 @@ if __name__ == "__main__":
 
     # Policy
     policy_hparam = dict(
-        hidden_size=21,
-        obs_layer=None,
-        activation_nonlin=to.tanh,
-        mirrored_conv_weights=True,
-        conv_out_channels=1,
-        conv_kernel_size=None,
-        conv_padding_mode="circular",
         tau_init=10.0,
         tau_learnable=True,
-        kappa_init=1e-3,
+        kappa_init=1e-2,
         kappa_learnable=True,
-        potential_init_learnable=True,
-        use_cuda=False,
+        activation_nonlin=to.tanh,
+        potentials_dyn_fcn=pd_cubic,
+        potential_init_learnable=False,
     )
-    policy = NFPolicy(env.spec, **policy_hparam)
-
-    # Critic
-    vfcn_hparam = dict(hidden_sizes=[32, 32], hidden_nonlin=to.tanh)
-    vfcn = FNNPolicy(spec=EnvSpec(env.obs_space, ValueFunctionSpace), **vfcn_hparam)
-    critic_hparam = dict(
-        gamma=0.995,
-        lamda=0.95,
-        num_epoch=10,
-        batch_size=512,
-        standardize_adv=False,
-        standardizer=None,
-        max_grad_norm=1.0,
-        lr=5e-4,
-    )
-    critic = GAE(vfcn, **critic_hparam)
+    policy = ADNPolicy(spec=env.spec, **policy_hparam)
 
     # Algorithm
     algo_hparam = dict(
-        max_iter=500,
-        min_steps=10 * env.max_steps,
-        num_epoch=10,
-        eps_clip=0.15,
-        batch_size=512,
-        max_grad_norm=1.0,
-        lr=3e-4,
-        num_workers=6,
+        max_iter=50,
+        pop_size=20 * policy.num_param,
+        num_init_states_per_domain=1,
+        expl_factor=1.05,
+        expl_std_init=0.3,
+        num_workers=20,
     )
-    algo = PPO(ex_dir, env, policy, critic, **algo_hparam)
+    algo = HCNormal(ex_dir, env, policy, **algo_hparam)
 
     # Save the hyper-parameters
     save_dicts_to_yaml(
         dict(env=env_hparam, seed=args.seed),
         dict(policy=policy_hparam),
-        dict(critic=critic_hparam, vfcn=vfcn_hparam),
         dict(algo=algo_hparam, algo_name=algo.name),
         save_dir=ex_dir,
     )
 
     # Jeeeha
-    algo.train(seed=args.seed, snapshot_mode="best")
+    algo.train(seed=args.seed)
