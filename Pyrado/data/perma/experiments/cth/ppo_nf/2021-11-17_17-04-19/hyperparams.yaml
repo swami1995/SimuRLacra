@@ -1,0 +1,40 @@
+env: {}
+seed: 0
+policy:
+  activation_nonlin: <built-in method tanh of type object at 0x7fa13f3cfcc0>
+  conv_kernel_size: None
+  conv_out_channels: 1
+  conv_padding_mode: circular
+  hidden_size: 21
+  kappa_init: 0.001
+  kappa_learnable: true
+  mirrored_conv_weights: true
+  obs_layer: None
+  potential_init_learnable: true
+  tau_init: 10.0
+  tau_learnable: true
+  use_cuda: false
+critic:
+  batch_size: 512
+  gamma: 0.995
+  lamda: 0.95
+  lr: 0.0005
+  max_grad_norm: 1.0
+  num_epoch: 10
+  standardize_adv: false
+  standardizer: None
+vfcn:
+  hidden_nonlin: <built-in method tanh of type object at 0x7fa13f3cfcc0>
+  hidden_sizes:
+  - 32
+  - 32
+algo:
+  batch_size: 512
+  eps_clip: 0.15
+  lr: 0.0003
+  max_grad_norm: 1.0
+  max_iter: 500
+  min_steps: 10000
+  num_epoch: 10
+  num_workers: 6
+algo_name: ppo

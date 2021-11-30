@@ -32,7 +32,7 @@ Train an agent to solve the Half-Cheetah environment using Activation Dynamics N
 import torch as to
 
 import pyrado
-from pyrado.algorithms.episodic.hc import HCNormal
+from pyrado.algorithms.episodic.nes import NES
 from pyrado.environment_wrappers.action_normalization import ActNormWrapper
 from pyrado.environments.mujoco.openai_half_cheetah import HalfCheetahSim
 from pyrado.logger.experiment import save_dicts_to_yaml, setup_experiment
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     args = get_argparser().parse_args()
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(HalfCheetahSim.name, f"{HCNormal.name}_{ADNPolicy.name}")
+    ex_dir = setup_experiment(HalfCheetahSim.name, f"{NES.name}_{ADNPolicy.name}")
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
@@ -69,14 +69,17 @@ if __name__ == "__main__":
 
     # Algorithm
     algo_hparam = dict(
-        max_iter=50,
-        pop_size=10 * policy.num_param,
+        max_iter=5000,
+        pop_size=100,
         num_init_states_per_domain=1,
-        expl_factor=1.05,
-        expl_std_init=1.0,
+        eta_mean=2.0,
+        eta_std=None,
+        expl_std_init=0.5,
+        symm_sampling=False,
+        transform_returns=True,
         num_workers=20,
     )
-    algo = HCNormal(ex_dir, env, policy, **algo_hparam)
+    algo = NES(ex_dir, env, policy, **algo_hparam)
 
     # Save the hyper-parameters
     save_dicts_to_yaml(

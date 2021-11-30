@@ -1,0 +1,18 @@
+env: {}
+seed: 0
+policy:
+  activation_nonlin: <built-in method tanh of type object at 0x7f7c24235cc0>
+  kappa_init: 0.01
+  kappa_learnable: true
+  potential_init_learnable: false
+  potentials_dyn_fcn: <function pd_cubic at 0x7f7ab22139e0>
+  tau_init: 10.0
+  tau_learnable: true
+algo:
+  expl_factor: 1.05
+  expl_std_init: 1.0
+  max_iter: 50
+  num_init_states_per_domain: 1
+  num_workers: 12
+  pop_size: 1520
+algo_name: hc

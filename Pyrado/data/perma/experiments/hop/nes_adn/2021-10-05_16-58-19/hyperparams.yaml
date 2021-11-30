@@ -1,0 +1,21 @@
+env: {}
+seed: 1
+policy:
+  activation_nonlin: <built-in method tanh of type object at 0x7f444927fcc0>
+  kappa_init: 0.01
+  kappa_learnable: true
+  potential_init_learnable: false
+  potentials_dyn_fcn: <function pd_cubic at 0x7f42d712a320>
+  tau_init: 10.0
+  tau_learnable: true
+algo:
+  eta_mean: 2.0
+  eta_std: None
+  expl_std_init: 0.5
+  max_iter: 5000
+  num_init_states_per_domain: 1
+  num_workers: 20
+  pop_size: 100
+  symm_sampling: false
+  transform_returns: true
+algo_name: nes

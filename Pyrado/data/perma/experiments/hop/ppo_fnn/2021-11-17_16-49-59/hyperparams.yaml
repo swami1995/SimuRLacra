@@ -1,0 +1,31 @@
+env: {}
+seed: 0
+policy:
+  hidden_nonlin: <built-in method tanh of type object at 0x7fc0ddcdfcc0>
+  hidden_sizes:
+  - 64
+  - 64
+critic:
+  batch_size: 512
+  gamma: 0.995
+  lamda: 0.95
+  lr: 0.0005
+  max_grad_norm: 1.0
+  num_epoch: 10
+  standardize_adv: false
+  standardizer: None
+vfcn:
+  hidden_nonlin: <built-in method tanh of type object at 0x7fc0ddcdfcc0>
+  hidden_sizes:
+  - 64
+  - 64
+algo:
+  batch_size: 512
+  eps_clip: 0.15
+  lr: 0.0003
+  max_grad_norm: 1.0
+  max_iter: 500
+  min_steps: 20000
+  num_epoch: 10
+  num_workers: 12
+algo_name: ppo
