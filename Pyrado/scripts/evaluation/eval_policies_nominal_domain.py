@@ -33,6 +33,7 @@ import os.path as osp
 
 import pandas as pd
 from prettyprinter import pprint
+from abc import ABC, abstractmethod
 
 import pyrado
 from pyrado.domain_randomization.utils import wrap_like_other_env
@@ -46,7 +47,10 @@ from pyrado.utils.checks import check_all_lengths_equal
 from pyrado.utils.data_types import dict_arraylike_to_float
 from pyrado.utils.experiments import load_experiment
 from pyrado.utils.input_output import print_cbt
-
+import numpy as np
+from torch import nn
+import torch
+import ipdb
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -54,20 +58,21 @@ if __name__ == "__main__":
     if args.max_steps == pyrado.inf:
         args.max_steps = 2500
         print_cbt(f"Set maximum number of time steps to {args.max_steps}", "y")
-
+    # ipdb.set_trace()
+    pyrado.EXP_DIR = pyrado.EVAL_DIR = pyrado.TEMP_DIR
     if args.env_name == QBallBalancerSim.name:
         # Create the environment for evaluating
         env = QBallBalancerSim(dt=args.dt, max_steps=args.max_steps)
 
         # Get the experiments' directories to load from
         prefixes = [
-            osp.join(pyrado.EXP_DIR, "ENV_NAME", "ALGO_NAME"),
+            osp.join(pyrado.EXP_DIR, "qcp-su", "ppo_fnn"),
         ]
         ex_names = [
-            "",
+            "2022-02-18_00-59-42",
         ]
         ex_labels = [
-            "",
+            "eval_qcp_ppo_15_rand",
         ]
 
     elif args.env_name in [QCartPoleStabSim.name, QCartPoleSwingUpSim.name]:
@@ -79,13 +84,13 @@ if __name__ == "__main__":
 
         # Get the experiments' directories to load from
         prefixes = [
-            osp.join(pyrado.EXP_DIR, "ENV_NAME", "ALGO_NAME"),
+            osp.join(pyrado.EXP_DIR, "qcp-su", "ppo_fnn"),
         ]
         ex_names = [
-            "",
+            "2022-02-18_00-59-42",
         ]
         ex_labels = [
-            "",
+            "eval_qcp_ppo_15_rand",
         ]
 
     else:
@@ -105,15 +110,36 @@ if __name__ == "__main__":
     env_sim_list = []
     policy_list = []
     for ex_dir in ex_dirs:
-        _, policy, _ = load_experiment(ex_dir, args)
+        env_, policy, _ = load_experiment(ex_dir, args)
         policy_list.append(policy)
+        env_sim_list.append(env_)
 
     # Fix initial state (set to None if it should not be fixed)
-    init_state_list = [None] * args.num_rollouts_per_config
-
+    init_state_list = [(j, np.array([0.0, 0.0, 0.0, 0.0])) for j in range(args.num_rollouts_per_config)]
+    class Policy_periodic(nn.Module):
+        def __init__(self, T=1, dt=0.01, itype='square'):
+            super().__init__()
+            self.T = T
+            self.dt = dt
+            self.type = itype
+            self.count = 0
+            self.output = -2/8
+            self.total_count = 0
+            self.ff = nn.Linear(1, 1)
+        def init_param(self, init_values: torch.Tensor = None, **kwargs):
+            self.param_values = init_values
+        def forward(self, obs):
+            self.count +=1
+            self.total_count +=1
+            if self.count > self.T/(self.dt*2):
+                self.output*= -1
+                self.count = 0
+            return self.output*torch.ones_like(obs)[:1]
+    policy_test = Policy_periodic()
+    #from IPython import embed; embed()
     # Crate empty data frame
     df = pd.DataFrame(columns=["policy", "ret", "len"])
-
+    from pyrado.sampling.rollout import rollout
     # Evaluate all policies
     for i, (env_sim, policy) in enumerate(zip(env_sim_list, policy_list)):
         # Create a new sampler pool for every policy to synchronize the random seeds i.e. init states
@@ -130,13 +156,17 @@ if __name__ == "__main__":
         env = wrap_like_other_env(env, env_sim)
 
         # Sample rollouts
-        ros = eval_nominal_domain(pool, env, policy, init_state_list)
+        ros = [rollout(env, policy_test, eval=True, seed=0, sub_seed=0, sub_sub_seed=0, reset_kwargs=dict(init_state=init_state_list[0][1]))]
+        # ros = eval_nominal_domain(pool, env, policy, init_state_list, args.seed, i)
 
         # Compute results metrics
         rets = [ro.undiscounted_return() for ro in ros]
         lengths = [float(ro.length) for ro in ros]  # int values are not numeric in pandas
         df = df.append(pd.DataFrame(dict(policy=ex_labels[i], ret=rets, len=lengths)), ignore_index=True)
-
+    import matplotlib.pyplot as plt
+    ipdb.set_trace()
+    plt.plot(np.arange(0, (lengths[0]+1)*0.01, 0.01), ros[0].observations[:, 0]*1000)
+    plt.plot(np.arange(0, (lengths[0]+1)*0.01, 0.01), ros[0].observations[:, 3])
     metrics = dict(
         avg_len=df.groupby("policy").mean()["len"].to_dict(),
         avg_ret=df.groupby("policy").mean()["ret"].to_dict(),

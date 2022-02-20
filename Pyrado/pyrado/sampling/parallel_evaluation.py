@@ -110,7 +110,7 @@ def eval_domain_params(
 
 
 def eval_nominal_domain(
-    pool: SamplerPool, env: SimEnv, policy: Policy, init_states: List[np.ndarray]
+    pool: SamplerPool, env: SimEnv, policy: Policy, init_states: List[np.ndarray], seed: int, sub_seed: int
 ) -> List[StepSequence]:
     """
     Evaluate a policy using the nominal (set in the given environment) domain parameters.
@@ -128,7 +128,7 @@ def eval_nominal_domain(
 
     # Run with progress bar
     with tqdm(leave=False, file=sys.stdout, unit="rollouts", desc="Sampling") as pb:
-        return pool.run_map(functools.partial(_ps_run_one_init_state, eval=True), init_states, pb)
+        return pool.run_map(functools.partial(_ps_run_one_init_state, eval=True, seed=seed, sub_seed=sub_seed), init_states, pb)
 
 
 def eval_randomized_domain(

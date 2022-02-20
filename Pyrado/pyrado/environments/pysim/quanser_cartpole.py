@@ -73,7 +73,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
         self._obs_space = None
         self._long = long
         self._wild_init = wild_init
-        self._x_buffer = 0.05  # [m]
+        self._x_buffer = 0.15  # [m]
 
         # Call SimPyEnv's constructor
         super().__init__(dt, max_steps, task_args)
@@ -114,7 +114,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
 
         return dict(
             gravity_const=9.81,  # gravity constant [m/s**2]
-            cart_mass=0.38,  # mass of the cart [kg]
+            cart_mass=0.58,  # mass of the cart [kg]
             rail_length=0.814,  # length of the rail the cart is running on [m]
             motor_efficiency=0.9,  # motor efficiency [-], default 1.
             gear_efficiency=0.9,  # planetary gearbox efficiency [-], default 1.
@@ -323,13 +323,13 @@ class QCartPoleSwingUpSim(QCartPoleSim, Serializable):
         # Define the spaces
         l_rail = self.domain_param["rail_length"]
         max_state = np.array(
-            [+l_rail / 2.0 - self._x_buffer, +4 * np.pi, 2 * l_rail, 20 * np.pi]
+            [+l_rail / 2.0 - self._x_buffer, +4 * np.pi, 1 * l_rail, 20 * np.pi]
         )  # [m, rad, m/s, rad/s]
         min_state = np.array(
-            [-l_rail / 2.0 + self._x_buffer, -4 * np.pi, -2 * l_rail, -20 * np.pi]
+            [-l_rail / 2.0 + self._x_buffer, -4 * np.pi, -1 * l_rail, -20 * np.pi]
         )  # [m, rad, m/s, rad/s]
         if self._wild_init:
-            max_init_state = np.array([0.05, np.pi, 0.02, 2 / 180.0 * np.pi])  # [m, rad, m/s, rad/s]
+            max_init_state = np.array([0.25, np.pi, 0.8, np.pi])  # [m, rad, m/s, rad/s]
         else:
             max_init_state = np.array([0.02, 2 / 180.0 * np.pi, 0.0, 1 / 180.0 * np.pi])  # [m, rad, m/s, rad/s]
 

@@ -11,7 +11,7 @@
 % Copyright (C) 2012 Quanser Consulting Inc.
 % Quanser Consulting Inc.
 
-clear all;
+% clear all;
 
 % ############### USER-DEFINED IP02 with SIP CONFIGURATION ###############
 

@@ -33,14 +33,14 @@ import torch as to
 from torch.optim import lr_scheduler
 
 import pyrado
-from pyrado.algorithms.step_based.gae import GAE
-from pyrado.algorithms.step_based.ppo import PPO
+from pyrado.algorithms.step_based.sac import SAC
 from pyrado.environment_wrappers.action_normalization import ActNormWrapper
 from pyrado.environments.pysim.quanser_cartpole import QCartPoleSwingUpSim
 from pyrado.logger.experiment import save_dicts_to_yaml, setup_experiment
 from pyrado.policies.feed_back.fnn import FNNPolicy
-from pyrado.policies.recurrent.rnn import GRUPolicy
+from pyrado.policies.feed_back.two_headed_fnn import TwoHeadedFNNPolicy
 from pyrado.spaces import ValueFunctionSpace
+from pyrado.spaces.box import BoxSpace
 from pyrado.utils.argparser import get_argparser
 from pyrado.utils.data_types import EnvSpec
 import ipdb
@@ -49,85 +49,67 @@ from IPython import embed
 if __name__ == "__main__":
     # Parse command line arguments
     args = get_argparser().parse_args()
-    if args.mode is None or args.mode.lower() == FNNPolicy.name:
-        pol_str = FNNPolicy.name
-    elif args.mode.lower() == GRUPolicy.name:
-        pol_str = GRUPolicy.name
-    else:
-        raise pyrado.ValueErr(given=args.mode, eq_constraint=f"{FNNPolicy.name}, {GRUPolicy.name}, or None")
     seed_str = f"seed-{args.seed}" if args.seed is not None else None
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(QCartPoleSwingUpSim.name, f"{PPO.name}_{pol_str}", seed_str)
+    ex_dir = setup_experiment(QCartPoleSwingUpSim.name, f"{SAC.name}", seed_str)
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
 
     # Environment
-    env_hparam = dict(
+    env_hparams = dict(
         dt=1 / 100.0,
         max_steps=600,
         long=False,
         simple_dynamics=False,
         wild_init=True,
     )
-    env = QCartPoleSwingUpSim(**env_hparam)
+    env = QCartPoleSwingUpSim(**env_hparams)
     # env = ObsVelFiltWrapper(env, idcs_pos=["theta", "alpha"], idcs_vel=["theta_dot", "alpha_dot"])
     env = ActNormWrapper(env)
 
     # Policy
-    if args.mode is None or args.mode.lower() == FNNPolicy.name:
-        policy_hparam = dict(hidden_sizes=[64, 64], hidden_nonlin=to.tanh)
-        policy = FNNPolicy(spec=env.spec, **policy_hparam)
-    elif args.mode.lower() == GRUPolicy.name:
-        policy_hparam = dict(hidden_size=32, num_recurrent_layers=1)
-        policy = GRUPolicy(spec=env.spec, **policy_hparam)
-    # ipdb.set_trace()
+    policy_hparam = dict(shared_hidden_sizes=[64, 64], shared_hidden_nonlin=to.relu)
+    policy = TwoHeadedFNNPolicy(spec=env.spec, **policy_hparam)
     # embed()
-    # Critic
-    if isinstance(policy, FNNPolicy):
-        vfcn_hparam = dict(hidden_sizes=[32, 32], hidden_nonlin=to.relu)  # FNN
-        vfcn = FNNPolicy(spec=EnvSpec(env.obs_space, ValueFunctionSpace), **vfcn_hparam)
-    elif isinstance(policy, GRUPolicy):
-        vfcn_hparam = dict(hidden_size=32, num_recurrent_layers=1)  # LSTM & GRU
-        vfcn = GRUPolicy(spec=EnvSpec(env.obs_space, ValueFunctionSpace), **vfcn_hparam)
-    critic_hparam = dict(
-        gamma=0.9844224855479998,
-        lamda=0.9700148505302241,
-        num_epoch=5,
-        batch_size=500,
-        standardize_adv=False,
-        lr=7.058326426522811e-4,
-        max_grad_norm=6.0,
-        lr_scheduler=lr_scheduler.ExponentialLR,
-        lr_scheduler_hparam=dict(gamma=0.999),
-    )
-    critic = GAE(vfcn, **critic_hparam)
 
-    # Subroutine
+    # Critic
+    qfnc_param = dict(hidden_sizes=[64, 64], hidden_nonlin=to.relu)  # FNN
+    combined_space = BoxSpace.cat([env.obs_space, env.act_space])
+    q1 = FNNPolicy(spec=EnvSpec(combined_space, ValueFunctionSpace), **qfnc_param)
+    q2 = FNNPolicy(spec=EnvSpec(combined_space, ValueFunctionSpace), **qfnc_param)
+
+
+    # Algorithm
     algo_hparam = dict(
-        max_iter=200 if policy.name == FNNPolicy.name else 75,
-        eps_clip=0.12648736789309026,
+        gamma=0.9844224855479998,
+        memory_size=1000000,
+        max_iter=300,
+        num_updates_per_step=1000,
+        tau=0.99,
+        ent_coeff_init=0.3,
+        learn_ent_coeff=True,
+        target_update_intvl=1,
+        num_init_memory_steps=120 * env.max_steps,
+        standardize_rew=False,
         min_steps=30 * env.max_steps,
-        num_epoch=7,
-        batch_size=500,
-        std_init=0.7573286998997557,
-        lr=6.999956625305722e-04,
-        max_grad_norm=1.0,
+        batch_size=256,
+        lr=5e-4,
+        max_grad_norm=1.5,
         num_workers=8,
-        lr_scheduler=lr_scheduler.ExponentialLR,
-        lr_scheduler_hparam=dict(gamma=0.999),
+        eval_intvl=1,
     )
-    algo = PPO(ex_dir, env, policy, critic, **algo_hparam)
+    algo = SAC(ex_dir, env, policy, q1, q2, **algo_hparam)
 
     # Save the hyper-parameters
     save_dicts_to_yaml(
-        dict(env=env_hparam, seed=args.seed),
+        dict(env=env_hparams, seed=args.seed),
         dict(policy=policy_hparam),
-        dict(critic=critic_hparam, vfcn=vfcn_hparam),
+        dict(qfcn=qfnc_param),
         dict(algo=algo_hparam, algo_name=algo.name),
         save_dir=ex_dir,
     )
 
     # Jeeeha
-    algo.train(snapshot_mode="latest", seed=args.seed)
+    algo.train(snapshot_mode="latest_and_best", seed=args.seed)

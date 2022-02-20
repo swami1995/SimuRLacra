@@ -32,6 +32,7 @@ from typing import Any, Optional, Tuple, Union
 
 import joblib
 import torch.nn as nn
+import copy
 
 import pyrado
 from pyrado import set_seed
@@ -334,6 +335,17 @@ class Algorithm(ABC, LoggerAware):
             if curr_avg_ret > self._highest_avg_ret:
                 self._highest_avg_ret = curr_avg_ret
                 self.save_snapshot(meta_info)
+        elif snapshot_mode == "latest_and_best":
+            self.save_snapshot(meta_info)
+            if curr_avg_ret is None:
+                raise pyrado.ValueErr(msg="curr_avg_ret must not be None when snapshot_mode = 'best'!")
+            if curr_avg_ret > self._highest_avg_ret:
+                self._highest_avg_ret = curr_avg_ret
+                meta_info_copy = copy.deepcopy(meta_info)
+                if meta_info_copy is None:
+                    meta_info_copy = {}
+                meta_info_copy["prefix"] = "best"
+                self.save_snapshot(meta_info_copy)
         elif snapshot_mode in {"no", "None"}:
             pass  # don't save anything
         else:

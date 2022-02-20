@@ -49,8 +49,8 @@ project_dir = osp.dirname(osp.abspath(__file__))
 # Check if we are in CI
 CI = "CI" in os.environ
 # Make sure the git submodules are up to date, otherwise this script might break them
-if not CI:
-    sp.check_call(["git", "submodule", "update", "--init"], cwd=project_dir)
+# if not CI:
+#     sp.check_call(["git", "submodule", "update", "--init"], cwd=project_dir)
 
 # Check if we are in HRI by looking for the SIT envionment variable
 IN_HRI = "SIT" in os.environ
@@ -656,8 +656,8 @@ def setup_robcom():
 def setup_wo_rcs_wo_pytorch():
     print("\nStarting Option Red Velvet Setup\n")
     # Rcs will still be downloaded since it is a submodule
-    setup_wam()  # ignoring the meshes used in RcsPySim
-    setup_mujoco_py()
+    # setup_wam()  # ignoring the meshes used in RcsPySim
+    # setup_mujoco_py()
     if not CI:
         setup_pyrado()
         if not args.headless:
