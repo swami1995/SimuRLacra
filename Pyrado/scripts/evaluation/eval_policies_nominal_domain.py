@@ -84,13 +84,14 @@ if __name__ == "__main__":
 
         # Get the experiments' directories to load from
         prefixes = [
-            osp.join(pyrado.EXP_DIR, "qcp-su", "ppo_fnn"),
+            osp.join(pyrado.EXP_DIR, "qcp-su", "sac"),
         ]
         ex_names = [
-            "2022-02-18_00-59-42",
+            #"2022-02-20_18-46-44",
+            "2022-02-20_21-15-30",
         ]
         ex_labels = [
-            "eval_qcp_ppo_15_rand",
+            "eval_qcp_sac_15_rand",
         ]
 
     else:
@@ -113,8 +114,9 @@ if __name__ == "__main__":
         env_, policy, _ = load_experiment(ex_dir, args)
         policy_list.append(policy)
         env_sim_list.append(env_)
-
+    #ipdb.set_trace()
     # Fix initial state (set to None if it should not be fixed)
+    # init_state_list = [(j, None) for j in range(args.num_rollouts_per_config)]
     init_state_list = [(j, np.array([0.0, 0.0, 0.0, 0.0])) for j in range(args.num_rollouts_per_config)]
     class Policy_periodic(nn.Module):
         def __init__(self, T=1, dt=0.01, itype='square'):
@@ -156,8 +158,8 @@ if __name__ == "__main__":
         env = wrap_like_other_env(env, env_sim)
 
         # Sample rollouts
-        ros = [rollout(env, policy_test, eval=True, seed=0, sub_seed=0, sub_sub_seed=0, reset_kwargs=dict(init_state=init_state_list[0][1]))]
-        # ros = eval_nominal_domain(pool, env, policy, init_state_list, args.seed, i)
+        # ros = [rollout(env, policy_test, eval=True, seed=0, sub_seed=0, sub_sub_seed=0, reset_kwargs=dict(init_state=init_state_list[0][1]))]
+        ros = eval_nominal_domain(pool, env, policy, init_state_list, args.seed, i)
 
         # Compute results metrics
         rets = [ro.undiscounted_return() for ro in ros]

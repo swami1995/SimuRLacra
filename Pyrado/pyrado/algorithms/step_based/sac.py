@@ -259,8 +259,10 @@ class SAC(ValueBased):
 
             # Explore and compute the current log probs (later used for policy update)
             if self.policy.is_recurrent:
+                next_act_expl1, _, _ = self._expl_strat(next_steps.observations, next_steps.hidden_states)
                 act_expl, log_probs_expl, _ = self._expl_strat(steps.observations, steps.hidden_states)
             else:
+                next_act_expl1, _ = self._expl_strat(next_steps.observations)
                 act_expl, log_probs_expl = self._expl_strat(steps.observations)
             expl_strat_stds[b] = to.mean(self._expl_strat.std.data)
 
@@ -315,7 +317,8 @@ class SAC(ValueBased):
             q_1_val_expl = self.qfcn_1(curr_obs_act_expl)
             q_2_val_expl = self.qfcn_2(curr_obs_act_expl)
             min_q_val_expl = to.min(q_1_val_expl, q_2_val_expl)
-            policy_loss = to.mean(self.ent_coeff * log_probs_expl - min_q_val_expl)  # self.ent_coeff is detached
+            smooth_loss = to.abs(act_expl - next_act_expl1).mean()
+            policy_loss = to.mean(self.ent_coeff * log_probs_expl - min_q_val_expl + 0.5*smooth_loss)  # self.ent_coeff is detached
             policy_losses[b] = policy_loss.data
 
             # Update the policy

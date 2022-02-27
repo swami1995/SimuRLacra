@@ -40,7 +40,7 @@ from pyrado.tasks.base import Task
 from pyrado.tasks.desired_state import RadiallySymmDesStateTask
 from pyrado.tasks.final_reward import FinalRewMode, FinalRewTask
 from pyrado.tasks.reward_functions import ExpQuadrErrRewFcn, QuadrErrRewFcn
-
+import torch
 
 class QCartPoleSim(SimPyEnv, Serializable):
     """Base Environment for the Quanser Cart-Pole swing-up and stabilization task"""
@@ -98,7 +98,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
     def reset(self, init_state: np.ndarray = None, domain_param: dict = None) -> np.ndarray:
         # Set the initial angular acceleration to zero
         self._th_ddot = 0.0
-        self._th_ddot_tensor = torch.zeros(init_state.shape)
+        self._th_ddot_tensor = torch.zeros(1)
 
         return super().reset(init_state, domain_param)
 
