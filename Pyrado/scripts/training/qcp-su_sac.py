@@ -34,7 +34,7 @@ from torch.optim import lr_scheduler
 
 import pyrado
 from pyrado.algorithms.step_based.sac import SAC
-from pyrado.environment_wrappers.action_normalization import ActNormWrapper
+from pyrado.environment_wrappers.action_normalization import ActNormWrapper, ObsActCatWrapper
 from pyrado.environments.pysim.quanser_cartpole import QCartPoleSwingUpSim
 from pyrado.logger.experiment import save_dicts_to_yaml, setup_experiment
 from pyrado.policies.feed_back.fnn import FNNPolicy
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     seed_str = f"seed-{args.seed}" if args.seed is not None else None
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(QCartPoleSwingUpSim.name, f"{SAC.name}", seed_str)
+    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T1200", f"{SAC.name}", seed_str)
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
@@ -60,14 +60,15 @@ if __name__ == "__main__":
     # Environment
     env_hparams = dict(
         dt=1 / 100.0,
-        max_steps=600,
-        long=False,
+        max_steps=1200,
+        long=True,
         simple_dynamics=False,
         wild_init=True,
     )
     env = QCartPoleSwingUpSim(**env_hparams)
     # env = ObsVelFiltWrapper(env, idcs_pos=["theta", "alpha"], idcs_vel=["theta_dot", "alpha_dot"])
     env = ActNormWrapper(env)
+    env = ObsActCatWrapper(env)
 
     # Policy
     policy_hparam = dict(shared_hidden_sizes=[64, 64], shared_hidden_nonlin=to.tanh)
@@ -76,10 +77,10 @@ if __name__ == "__main__":
 
     # Critic
     qfnc_param = dict(hidden_sizes=[64, 64], hidden_nonlin=to.tanh)  # FNN
+    # ipdb.set_trace()
     combined_space = BoxSpace.cat([env.obs_space, env.act_space])
     q1 = FNNPolicy(spec=EnvSpec(combined_space, ValueFunctionSpace), **qfnc_param)
     q2 = FNNPolicy(spec=EnvSpec(combined_space, ValueFunctionSpace), **qfnc_param)
-
 
     # Algorithm
     algo_hparam = dict(
