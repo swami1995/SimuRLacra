@@ -301,6 +301,121 @@ class Algorithm(ABC, LoggerAware):
         else:
             print_cbt(f"{get_class_name(self)} finished training. {stopping_reason}", "g")
 
+
+    def train_sim2sim(self, snapshot_mode: str = "latest", seed: int = None, meta_info: dict = None):
+        """
+        Train one/multiple policy/policies in a given environment.
+
+        :param snapshot_mode: determines when the snapshots are stored (e.g. on every iteration or on new high-score)
+        :param seed: seed value for the random number generators, pass `None` for no seeding
+        :param meta_info: is not `None` if this algorithm is run as a subroutine of a meta-algorithm,
+                          contains a dict of information about the current iteration of the meta-algorithm
+        """
+        if self._policy is not None:
+            print_cbt(
+                f"{get_class_name(self)} started training a {get_class_name(self._policy)} "
+                f"with {self._policy.num_param} parameters using the snapshot mode {snapshot_mode}.",
+                "g",
+            )
+            # Set dropout and batch normalization layers to training mode
+            self._policy.train()
+        else:
+            print_cbt(f"{get_class_name(self)} started training using the snapshot mode {snapshot_mode}.", "g")
+
+        # Set all rngs' seeds
+        if seed is not None:
+            set_seed(seed, verbose=True)
+
+        # The stopping criterion might add values to the log. Invoke it once to not run into errors later for keys
+        # that where added after the first step.
+        self.stopping_criterion_met()
+
+        while not self.stopping_criterion_met():
+            # Record current iteration to logger
+            self.logger.add_value(self.iteration_key, self._curr_iter)
+
+            # Acquire data, save the training progress, and update the parameters
+            self.step_sim2sim(snapshot_mode, meta_info)
+
+            # Update logger and print
+            self.logger.record_step()
+
+            # Increase the iteration counter
+            self._curr_iter += 1
+
+        if self.stopping_criterion_met():
+            stopping_reason = "Stopping criteria met!"
+        else:
+            stopping_reason = "Maximum number of iterations reached!"
+
+        if self._policy is not None:
+            print_cbt(
+                f"{get_class_name(self)} finished training a {get_class_name(self._policy)} "
+                f"with {self._policy.num_param} parameters. {stopping_reason}",
+                "g",
+            )
+            # Set dropout and batch normalization layers to evaluation mode
+            self._policy.eval()
+        else:
+            print_cbt(f"{get_class_name(self)} finished training. {stopping_reason}", "g")
+
+    def train_sim2real(self, snapshot_mode: str = "latest", seed: int = None, meta_info: dict = None):
+        """
+        Train one/multiple policy/policies in a given environment.
+
+        :param snapshot_mode: determines when the snapshots are stored (e.g. on every iteration or on new high-score)
+        :param seed: seed value for the random number generators, pass `None` for no seeding
+        :param meta_info: is not `None` if this algorithm is run as a subroutine of a meta-algorithm,
+                          contains a dict of information about the current iteration of the meta-algorithm
+        """
+        if self._policy is not None:
+            print_cbt(
+                f"{get_class_name(self)} started training a {get_class_name(self._policy)} "
+                f"with {self._policy.num_param} parameters using the snapshot mode {snapshot_mode}.",
+                "g",
+            )
+            # Set dropout and batch normalization layers to training mode
+            self._policy.train()
+        else:
+            print_cbt(f"{get_class_name(self)} started training using the snapshot mode {snapshot_mode}.", "g")
+
+        # Set all rngs' seeds
+        if seed is not None:
+            set_seed(seed, verbose=True)
+
+        # The stopping criterion might add values to the log. Invoke it once to not run into errors later for keys
+        # that where added after the first step.
+        self.stopping_criterion_met()
+
+        while not self.stopping_criterion_met():
+            # Record current iteration to logger
+            self.logger.add_value(self.iteration_key, self._curr_iter)
+
+            # Acquire data, save the training progress, and update the parameters
+            self.step_sim2real(snapshot_mode, meta_info)
+
+            # Update logger and print
+            self.logger.record_step()
+
+            # Increase the iteration counter
+            self._curr_iter += 1
+
+        if self.stopping_criterion_met():
+            stopping_reason = "Stopping criteria met!"
+        else:
+            stopping_reason = "Maximum number of iterations reached!"
+
+        if self._policy is not None:
+            print_cbt(
+                f"{get_class_name(self)} finished training a {get_class_name(self._policy)} "
+                f"with {self._policy.num_param} parameters. {stopping_reason}",
+                "g",
+            )
+            # Set dropout and batch normalization layers to evaluation mode
+            self._policy.eval()
+        else:
+            print_cbt(f"{get_class_name(self)} finished training. {stopping_reason}", "g")
+
     @abstractmethod
     def step(self, snapshot_mode: str, meta_info: dict = None):
         """
@@ -368,9 +483,9 @@ class Algorithm(ABC, LoggerAware):
         :param parsed_args: arguments parsed by the `argparser`
         :return: environment, policy, and (optional) algorithm-specific output, e.g. value function
         """
-        ex_dir = self._save_dir or getattr(parsed_args, "dir", None)
+        ex_dir = getattr(parsed_args, "dir", None) or self._save_dir
         env = pyrado.load("env.pkl", ex_dir, verbose=True)
-        policy = pyrado.load(f"{parsed_args.policy_name}.pt", ex_dir, obj=self.policy, verbose=True)
+        policy = pyrado.load(f"{parsed_args.prefix}policy.pt", ex_dir, obj=self.policy, verbose=True)
         return env, policy, dict()
 
     @staticmethod

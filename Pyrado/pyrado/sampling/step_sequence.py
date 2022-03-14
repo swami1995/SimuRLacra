@@ -244,6 +244,8 @@ class StepSequence(Sequence[Step]):
     rewards: Union[np.ndarray, to.Tensor]
     observations: Union[np.ndarray, to.Tensor]
     actions: Union[np.ndarray, to.Tensor]
+    # reward_grads: Union[np.ndarray, to.Tensor]
+    # obs_grad: Union[np.ndarray, to.Tensor]
 
     # Set of required rollout fields in addition to rewards, observations, actions. Putting this into a class field
     # instead of using the constructor arguments reduces duplicate code and allows to override it during unit tests.

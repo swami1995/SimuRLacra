@@ -64,7 +64,8 @@ if __name__ == "__main__":
         max_steps=300,
         long=True,
         simple_dynamics=False,
-        wild_init=True,
+        wild_init=False,
+        # pole_mass=1.34
     )
     env = QCartPoleSwingUpSim(**env_hparams)
     # env = ObsVelFiltWrapper(env, idcs_pos=["theta", "alpha"], idcs_vel=["theta_dot", "alpha_dot"])
@@ -106,6 +107,8 @@ if __name__ == "__main__":
         eval_intvl=1,
     )
     algo = SAC(ex_dir, env, policy, q1, q2, **algo_hparam)
+    algo.load_snapshot(args)
+    
 
     # Save the hyper-parameters
     save_dicts_to_yaml(

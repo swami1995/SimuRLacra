@@ -53,7 +53,7 @@ if __name__ == "__main__":
     seed_str = f"seed-{args.seed}" if args.seed is not None else None
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T1200", f"{SAC.name}", seed_str)
+    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T300_sim2sim", f"{SAC.name}", seed_str)
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
@@ -64,12 +64,25 @@ if __name__ == "__main__":
         max_steps=300,
         long=True,
         simple_dynamics=False,
-        wild_init=True,
+        wild_init='False',#'mod',#'False',
+        # mass=0.48,
+    )
+    env_sim_hparams = dict(
+        dt=1 / 20.0,
+        max_steps=300,
+        long=True,
+        simple_dynamics=False,
+        wild_init='False',#'mod',#'False',
+        # mass=0.48,
+        # mass=0.38,
     )
     env = QCartPoleSwingUpSim(**env_hparams)
+    env_sim = QCartPoleSwingUpSim(**env_sim_hparams)
     # env = ObsVelFiltWrapper(env, idcs_pos=["theta", "alpha"], idcs_vel=["theta_dot", "alpha_dot"])
     env = ActNormWrapper(env)
     env = ObsActCatWrapper(env)
+    env_sim = ActNormWrapper(env_sim)
+    env_sim = ObsActCatWrapper(env_sim)
 
     # Policy
     policy_hparam = dict(shared_hidden_sizes=[64, 64], shared_hidden_nonlin=to.tanh)
@@ -92,10 +105,12 @@ if __name__ == "__main__":
         memory_size=1000000,
         max_iter=300,
         num_updates_per_step=1000,
+        # num_updates_ratio_transfer=1,
         tau=0.99,
         ent_coeff_init=0.3,
         learn_ent_coeff=True,
         target_update_intvl=1,
+        num_init_rollouts=4,
         num_init_memory_steps=120 * env.max_steps,
         standardize_rew=False,
         min_steps=30 * env.max_steps,
@@ -104,8 +119,11 @@ if __name__ == "__main__":
         max_grad_norm=1.5,
         num_workers=1,
         eval_intvl=1,
+        env_sim=env_sim,
     )
     algo = SAC(ex_dir, env, policy, q1, q2, **algo_hparam)
+    algo.load_snapshot(args)
+    
 
     # Save the hyper-parameters
     save_dicts_to_yaml(
@@ -117,4 +135,4 @@ if __name__ == "__main__":
     )
 
     # Jeeeha
-    algo.train(snapshot_mode="latest_and_best", seed=args.seed)
+    algo.train_sim2sim(snapshot_mode="latest_and_best", seed=args.seed)

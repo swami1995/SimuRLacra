@@ -94,6 +94,7 @@ MUJOCO_LOG.*
 ### sbi-logs
 Pyrado/sbi-logs/
 Pyrado/tests/sbi-logs/
+runs/*
 
 thirdParty/
 setup_deps.py

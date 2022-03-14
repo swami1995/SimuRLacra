@@ -236,6 +236,7 @@ class ExpQuadrErrRewFcn(QuadrErrRewFcn):
 
     def __call__(self, err_s: np.ndarray, err_a: np.ndarray, remaining_steps: int = None) -> float:
         # Calculate the cost using the weighted sum of squared errors
+        # print(err_s)
         quard_cost = super()._weighted_quadr_cost(err_s, err_a)
 
         # Calculate the scaled exponential

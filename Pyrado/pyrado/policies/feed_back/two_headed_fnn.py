@@ -73,7 +73,7 @@ class TwoHeadedFNNPolicy(TwoHeadedPolicy):
 
         # Create the feed-forward neural network
         self.shared = FNN(
-            input_size=spec.obs_space.flat_dim,
+            input_size=spec.obs_space.flat_dim + 1,
             output_size=shared_hidden_sizes[-1],
             hidden_sizes=shared_hidden_sizes,
             hidden_nonlin=shared_hidden_nonlin,
@@ -105,6 +105,10 @@ class TwoHeadedFNNPolicy(TwoHeadedPolicy):
 
     def forward(self, obs: to.Tensor) -> Tuple[to.Tensor, to.Tensor]:
         obs = obs.to(device=self.device)
+        if len(obs.shape)==1:
+            obs = to.cat([obs[0].unsqueeze(-1), to.sin(obs[ 1]).unsqueeze(-1), to.cos(obs[ 1]).unsqueeze(-1), obs[ 2:]], dim=0)
+        else:
+            obs = to.cat([obs[:,0].unsqueeze(-1), to.sin(obs[:, 1]).unsqueeze(-1), to.cos(obs[:, 1]).unsqueeze(-1), obs[:, 2:]], dim=1)
 
         # Get the output of the last shared layer and pass this to the two headers separately
         x = self.shared(obs)

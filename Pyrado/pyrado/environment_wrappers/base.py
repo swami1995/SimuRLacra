@@ -242,6 +242,33 @@ class EnvWrapper(Env, Serializable):
         """
         return self._wrapped_env.step(act)
 
+    def step_diff(self, obs, act, th_ddot=None):
+        """
+        Perform one time step of the simulation. When a terminal condition is met, the reset function is called.
+
+        :param act: action to be taken in the step
+        :return tuple of obs, reward, done, and info:
+                obs : current observation of the environment
+                reward: reward depending on the selected reward function
+                done: indicates whether the episode has ended
+                env_info: contains diagnostic information about the environment
+        """
+        return self._wrapped_env.step_diff(obs, act, th_ddot)
+
+
+    def step_diff_state(self, obs, act, act_diff, th_ddot=None):
+        """
+        Perform one time step of the simulation. When a terminal condition is met, the reset function is called.
+
+        :param act: action to be taken in the step
+        :return tuple of obs, reward, done, and info:
+                obs : current observation of the environment
+                reward: reward depending on the selected reward function
+                done: indicates whether the episode has ended
+                env_info: contains diagnostic information about the environment
+        """
+        return self._wrapped_env.step_diff_state(obs, act, act_diff, th_ddot)
+
     def render(self, mode: RenderMode, render_step: int = 1):
         self._wrapped_env.render(mode, render_step)
 
@@ -289,6 +316,15 @@ class EnvWrapperAct(EnvWrapper):
 
         # Forward to EnvWrapper, which delegates to self._wrapped_env, which delegates to self._wrapped_env.step()
         return super().step(mod_act)
+
+    def step_diff(self, obs, act, th_ddot=None):
+        mod_act = self._process_act_tensor(act)
+        return super().step_diff(obs, mod_act, th_ddot)
+
+    def step_diff_state(self, obs, act, act_diff, th_ddot=None):
+        mod_act = self._process_act_tensor(act)
+        mod_act_diff = self._process_act_tensor(act_diff)
+        return super().step_diff_state(obs, mod_act, mod_act_diff, th_ddot)
 
     @property
     def act_space(self) -> Space:

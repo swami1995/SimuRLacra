@@ -51,7 +51,7 @@ _RES_SUCCESS = "success"
 _RES_ERROR = "error"
 _RES_FATAL = "fatal"
 
-ENABLE_SINGLE_WORKER_OPTIMIZATION = os.getenv("ENABLE_SINGLE_WORKER_OPTIMIZATION", None) is not None
+ENABLE_SINGLE_WORKER_OPTIMIZATION = True#os.getenv("ENABLE_SINGLE_WORKER_OPTIMIZATION", None) is not None
 
 
 def _pool_worker(from_master, to_master):

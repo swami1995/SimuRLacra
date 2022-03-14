@@ -41,6 +41,7 @@ from pyrado.tasks.desired_state import RadiallySymmDesStateTask
 from pyrado.tasks.final_reward import FinalRewMode, FinalRewTask
 from pyrado.tasks.reward_functions import ExpQuadrErrRewFcn, QuadrErrRewFcn
 import torch
+import ipdb
 
 class QCartPoleSim(SimPyEnv, Serializable):
     """Base Environment for the Quanser Cart-Pole swing-up and stabilization task"""
@@ -52,7 +53,8 @@ class QCartPoleSim(SimPyEnv, Serializable):
         task_args: Optional[dict],
         long: bool,
         simple_dynamics: bool,
-        wild_init: bool,
+        wild_init: str,
+        mass=None,
     ):
         r"""
         Constructor
@@ -80,7 +82,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
         super().__init__(dt, max_steps, task_args)
 
         # Update the class-specific domain parameters
-        self.domain_param = self.get_nominal_domain_param(long=long)
+        self.domain_param = self.get_nominal_domain_param(long=long, mass=mass)
 
     def _create_spaces(self):
         l_rail = self.domain_param["rail_length"]
@@ -99,20 +101,23 @@ class QCartPoleSim(SimPyEnv, Serializable):
         # Set the initial angular acceleration to zero
         self._th_ddot = 0.0
         self._th_ddot_tensor = torch.zeros(1)
-
-        return super().reset(init_state, domain_param)
+        obs = super().reset(init_state, domain_param)
+        return self.state
 
     def observe(self, state) -> np.ndarray:
         return np.array([state[0], np.sin(state[1]), np.cos(state[1]), state[2], state[3]])
 
     @classmethod
-    def get_nominal_domain_param(cls, long: bool = False) -> dict:
+    def get_nominal_domain_param(cls, long: bool = False, mass = None) -> dict:
         if long:
             m_pole = 0.23
             l_pole = 0.641 / 2
         else:
             m_pole = 0.127
             l_pole = 0.3365 / 2
+
+        if mass is not None:
+            m_pole = mass
 
         return dict(
             gravity_const=9.81,  # gravity constant [m/s**2]
@@ -213,10 +218,9 @@ class QCartPoleSim(SimPyEnv, Serializable):
         self.state[:2] += self.state[2:] * self._dt  # next position
 
 
-    def step_diff(self, obs, act):
+    def step_diff(self, obs, act, th_ddot=None):
         # Current reward depending on the state (before step) and the (unlimited) action
         remaining_steps = self._max_steps - (self._curr_step + 1) if self._max_steps is not pyrado.inf else 0
-    
 
         # Apply actuator limits
         act_unclamped = act
@@ -224,7 +228,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
         curr_act = act  # just for the render function
 
         # Apply the action and simulate the resulting dynamics
-        next_obs, rew, done = self._step_dynamics_diff(obs, act, act_unclamped)
+        next_obs, rew, done, info = self._step_dynamics_diff(obs, act, act_unclamped, th_ddot)
         # self._curr_step += 1
 
         # Check if the task or the environment is done
@@ -236,33 +240,75 @@ class QCartPoleSim(SimPyEnv, Serializable):
         #     # Add final reward if done
         #     curr_rew += self._task.final_rew(self.state, remaining_steps) #0.0
 
-        return next_obs, curr_rew, done, dict()
+        return next_obs, rew, done, info
+
+    def step_diff_state(self, state, act, act_diff, th_ddot=None):
+        # Current reward depending on the state (before step) and the (unlimited) action
+        remaining_steps = self._max_steps - (self._curr_step + 1) if self._max_steps is not pyrado.inf else 0
+
+        # Apply actuator limits
+        act_unclamped = act + act_diff
+        act_diff = self.limit_act_diff_clamp(act_diff)
+        act = self.limit_act_clamp(act + act_diff)
+        curr_act = act  # just for the render function
+
+        # Apply the action and simulate the resulting dynamics
+        next_state, rew, done, info = self._step_dynamics_diff(state, act, act_unclamped, th_ddot, state_based=True)
+        # self._curr_step += 1
+
+        # Check if the task or the environment is done
+        
+        # if self._curr_step >= self._max_steps:
+        #     done = True
+
+        # if done:
+        #     # Add final reward if done
+        #     curr_rew += self._task.final_rew(self.state, remaining_steps) #0.0
+
+        return next_state, rew, done, info
 
     def limit_act_clamp(self, act):
-        return torch.clamp(act, self.action_space.bound_lo, self.action_space.bound_hi)
+        ## NOTE: only for 1D act spaces. Might be problematic if blindly copied to higher dimensional action spaces
+        return torch.clamp(act, self.act_space.bound_lo.item(), self.act_space.bound_up.item())
+
+    def limit_act_diff_clamp(self, act_diff):
+        ## NOTE: only for 1D act spaces. Might be problematic if blindly copied to higher dimensional action spaces
+        return torch.clamp(act_diff, self.act_space.bound_lo.item()*0.5, self.act_space.bound_up.item()*0.5)
+        # return act_diff
 
     def is_done(self, state):
-        done = (1-((self.state_space_tensor.bound_lo < state).float()*(state_space.bound_hi > state).float()).prod(dim=-1)).bool()
+        done = (1-((self._state_space_bound_lo_tensor < state).float()*(self._state_space_bound_up_tensor > state).float()).prod(dim=-1)).bool()
         return done
 
     def rew_fn(self, state, act):
         # self.task._rew_fcn.Q, self.task._rew_fcn.R
         # Modulate the state error
         err_state = self.state_des - state
-        theta = err_state[:, 1] - ((err_state[:, 1]//2*np.pi)*(2*np.pi) + (err_state[:,1]<0).float()*(2*np.pi)).detach()
+        theta = err_state[:, 1] + (-(err_state[:, 1]//(2*np.pi))*(2*np.pi) + (err_state[:,1]<0).float()*(2*np.pi)).detach()
         # torch.remainder(err_state[self.idcs], 2*pi)  # by default map to [-2pi, 2pi]
+        # if (torch.any(theta>2*np.pi) or torch.any(theta<0)):
+        #     ipdb.set_trace()
 
         # Look at the shortest path to the desired state i.e. desired angle
-        theta = 2 * np.pi - err_state[err_state > np.pi]  # e.g. 360 - (210) = 150
+        mask = (theta > np.pi).float()
+        theta = (1-mask)*theta + mask*(theta - 2*np.pi)
+        # theta = 2 * np.pi - err_state[err_state > np.pi]  # e.g. 360 - (210) = 150
         # err_state[err_state < -np.pi] = -2 * np.pi - err_state[err_state < -np.pi]  # e.g. -360 - (-210) = -150
-
+        # ipdb.set_trace()
         err_state = torch.stack([err_state[:, 0], theta, err_state[:,2], err_state[:,3]], dim=-1)
-
-        reward = torch.bmm(torch.bmm(err_state.unsqueeze(-2), self.Q), err_state.unsqueeze(-1)).squeeze()
-        reward += (-act * self.R * (-act)).squeeze()
+        # print(err_state)#[:, 0].shape, theta.shape, err_state[:,2].shape, err_state[:,3].shape)
+        # ipdb.set_trace()
+        Q = self.Q
+        R = self.R.squeeze()
+        if state.shape[0]>1:
+            # ipdb.set_trace()
+            Q = torch.cat([self.Q]*state.shape[0], dim=0)
+        reward = torch.bmm(torch.bmm(err_state.unsqueeze(-2), Q), err_state.unsqueeze(-1)).squeeze()
+        reward += (-act * R * (-act)).squeeze()
+        reward = torch.exp(-reward)
         return reward
 
-    def _step_dynamics_diff(self, obs, u, act_unclamped):
+    def _step_dynamics_diff(self, obs, u, act_unclamped, _th_ddot=None, state_based=False):
         gravity_const = self.domain_param["gravity_const"]
         l_p = self.domain_param["pole_length"]
         m_p = self.domain_param["pole_mass"]
@@ -277,23 +323,36 @@ class QCartPoleSim(SimPyEnv, Serializable):
         B_p = self.domain_param["pole_damping"]
         mu_c = self.domain_param["cart_friction_coeff"]
 
-        x, x_dot, th_dot = obs[:,0], obs[:,3], obs[:,4]
-        cos_th = obs[:, 2]
-        sin_th = obs[:, 1]
-        mask_cos = (cos_th>0).float()
-        mask_sin = (sin_th>0).float()
-        th = (mask_sin*2-1)*torch.acos(cos_th) + (mask_cos*2-1)*torch.asin(sin_th) + np.pi * (2*mask_sin-1) * (1-mask_cos)
+        if _th_ddot is not None:
+            _th_ddot_tensor = _th_ddot
+        else:
+            _th_ddot_tensor = self._th_ddot_tensor
+
+        if state_based:
+            x, th, x_dot, th_dot = obs[:,0], obs[:,1], obs[:,2], obs[:,3]
+            cos_th = torch.cos(th)
+            sin_th = torch.sin(th)
+        else:
+            x, x_dot, th_dot = obs[:,0], obs[:,3], obs[:,4]
+            cos_th = obs[:, 2]
+            sin_th = obs[:, 1]
+            mask_cos = (cos_th>0).float()
+            mask_sin = (sin_th>0).float()
+            # th = (sin_th + cos_th)/2#
+            th = ((mask_sin*2-1)*torch.acos(cos_th) + (mask_cos*2-1)*torch.asin(sin_th) + np.pi * (2*mask_sin-1) * (1-mask_cos))/2
+        u = u.squeeze(-1)
         rew = self.rew_fn(torch.stack([x, th, x_dot, th_dot], dim=-1), act_unclamped)
         m_tot = m_c + m_p
 
         # Apply a voltage dead zone, i.e. below a certain amplitude the system is will not move.
         # This is a very simple model of static friction.
-        if (
-            not self._simple_dynamics
-            and self.domain_param["voltage_thold_neg"] <= u <= self.domain_param["voltage_thold_pos"]
-        ):
-            u = 0.0
-
+        # if (
+        #     not self._simple_dynamics
+        #     and self.domain_param["voltage_thold_neg"] <= u <= self.domain_param["voltage_thold_pos"]
+        # ):
+        #     u = 0.0
+        mask = torch.ge(u,self.domain_param["voltage_thold_neg"]).float()*torch.le(u, self.domain_param["voltage_thold_pos"]).float()*float(not self._simple_dynamics)
+        u = (1-mask)*u
         # Actuation force coming from the carts motor torque
         f_act = (eta_g * K_g * eta_m * k_m) / (R_m * r_mp) * (eta_m * u - K_g * k_m * x_dot / r_mp)
 
@@ -302,28 +361,35 @@ class QCartPoleSim(SimPyEnv, Serializable):
 
         else:
             # Force normal to the rail causing the Coulomb friction
-            f_normal = m_tot * gravity_const - m_p * l_p / 2 * (sin_th * self._th_ddot_tensor + cos_th * th_dot ** 2)
-            if f_normal < 0:
-                # The normal force on the cart is negative, i.e. it is lifted up. This can be cause by a very high
-                # angular momentum of the pole. Here we neglect this effect.
-                f_c = 0.0
-            else:
-                f_c = mu_c * f_normal * torch.sign(x_dot)
+            f_normal = m_tot * gravity_const - m_p * l_p / 2 * (sin_th * _th_ddot_tensor + cos_th * th_dot ** 2)
+            # if f_normal < 0:
+            #     # The normal force on the cart is negative, i.e. it is lifted up. This can be cause by a very high
+            #     # angular momentum of the pole. Here we neglect this effect.
+            #     f_c = 0.0
+            # else:
+            #     f_c = mu_c * f_normal * torch.sign(x_dot)
+            f_n_mask = (f_normal < 0).float()
+            f_c = (1-f_n_mask) * (mu_c * f_normal * torch.sign(x_dot))
             f_tot = f_act - f_c
 
         M = torch.stack([
                             torch.stack([(m_p + self.J_eq)*torch.ones_like(cos_th), m_p * l_p * cos_th], dim=-1),
                             torch.stack([(m_p * l_p * cos_th), (self.J_pole + m_p * l_p ** 2)*torch.ones_like(cos_th)], dim=-1)
                         ],dim=-2)
-        rhs = torch.stack(
-                        [
-                            f_tot - B_eq * x_dot - m_p * l_p * sin_th * th_dot ** 2,
-                            -B_p * th_dot - m_p * l_p * gravity_const * sin_th,
-                        ],dim=-1).unsqueeze(-1)
+        # if len(th_dot.shape)>1 and len(x_dot.shape)>1 and len(sin_th.shape)>1:
+        #     ipdb.set_trace()
+        try:
+            rhs = torch.stack(
+                            [
+                                f_tot - B_eq * x_dot - m_p * l_p * sin_th * th_dot ** 2,
+                                -B_p * th_dot - m_p * l_p * gravity_const * sin_th,
+                            ],dim=-1).unsqueeze(-1)
+        except:
+            ipdb.set_trace()
         # Compute acceleration from linear system of equations: M * x_ddot = rhs
         inv, _ = torch.solve(rhs, M)
         inv = inv.squeeze(-1)
-        x_ddot, th_ddot = inv[:, 0, 0], inv[:, 1, 0]
+        x_ddot, th_ddot = inv[:, 0], inv[:, 1]
 
         # Integration step (symplectic Euler)
         vel = torch.stack([x_dot, th_dot], dim=-1) + inv*self.dt# np.array([x_ddot, self._th_ddot_tensor]) * self._dt  # next velocity
@@ -331,8 +397,12 @@ class QCartPoleSim(SimPyEnv, Serializable):
         obs = torch.stack([pos[:,0], torch.sin(pos[:, 1]), torch.cos(pos[:, 1]), vel[:, 0], vel[:, 1]], dim=-1)
         next_state = torch.cat([pos, vel], dim=-1)
         done = self.is_done(next_state)
-        self._th_ddot_tensor = th_ddot.detach().clone()
-        return obs, rew, done
+        if _th_ddot is None:
+            self._th_ddot_tensor = th_ddot.detach().clone()
+        if state_based:
+            return next_state, rew, done, {'th_ddot': th_ddot}
+        else:
+            return obs, rew, done, {'th_ddot': th_ddot}
 
     def _init_anim(self):
         # Import PandaVis Class
@@ -373,7 +443,7 @@ class QCartPoleStabSim(QCartPoleSim, Serializable):
         self.stab_thold = 15 / 180.0 * np.pi  # threshold angle for the stabilization task to be a failure [rad]
         self.max_init_th_offset = 8 / 180.0 * np.pi  # [rad]
 
-        super().__init__(dt, max_steps, task_args, long, simple_dynamics, wild_init=False)
+        super().__init__(dt, max_steps, task_args, long, simple_dynamics, wild_init='False')
 
     def _create_spaces(self):
         super()._create_spaces()
@@ -423,7 +493,8 @@ class QCartPoleSwingUpSim(QCartPoleSim, Serializable):
         task_args: Optional[dict] = None,
         long: bool = False,
         simple_dynamics: bool = False,
-        wild_init: bool = True,
+        wild_init: str = 'True',
+        mass = None,
     ):
         r"""
         Constructor
@@ -439,7 +510,7 @@ class QCartPoleSwingUpSim(QCartPoleSim, Serializable):
         """
         Serializable._init(self, locals())
 
-        super().__init__(dt, max_steps, task_args, long, simple_dynamics, wild_init)
+        super().__init__(dt, max_steps, task_args, long, simple_dynamics, wild_init, mass=mass)
 
     def _create_spaces(self):
         super()._create_spaces()
@@ -452,13 +523,17 @@ class QCartPoleSwingUpSim(QCartPoleSim, Serializable):
         min_state = np.array(
             [-l_rail / 2.0 + self._x_buffer, -4 * np.pi, -1 * l_rail, -20 * np.pi]
         )  # [m, rad, m/s, rad/s]
-        if self._wild_init:
+        if self._wild_init=='True':
             max_init_state = np.array([0.25, np.pi, 0.8, np.pi])  # [m, rad, m/s, rad/s]
-        else:
+        elif self._wild_init=='False':
             max_init_state = np.array([0.02, 2 / 180.0 * np.pi, 0.0, 1 / 180.0 * np.pi])  # [m, rad, m/s, rad/s]
+        else:
+            max_init_state = np.array([0.02, np.pi, 0.0, 1 / 180.0 * np.pi])  # [m, rad, m/s, rad/s]
 
         self._state_space = BoxSpace(min_state, max_state, labels=["x", "theta", "x_dot", "theta_dot"])
         self._init_space = BoxSpace(-max_init_state, max_init_state, labels=["x", "theta", "x_dot", "theta_dot"])
+        self._state_space_bound_lo_tensor = torch.Tensor(self._state_space.bound_lo).to(self._th_ddot_tensor)
+        self._state_space_bound_up_tensor = torch.Tensor(self._state_space.bound_up).to(self._th_ddot_tensor)
 
     def _create_task(self, task_args: dict) -> Task:
         # Define the task including the reward function
@@ -470,4 +545,6 @@ class QCartPoleSwingUpSim(QCartPoleSim, Serializable):
         self.state_des = torch.Tensor(state_des).to(self._th_ddot_tensor).unsqueeze(0)
         self.Q = torch.Tensor(Q).to(self._th_ddot_tensor).unsqueeze(0)
         self.R = torch.Tensor(R).to(self._th_ddot_tensor).unsqueeze(0)
+        self._state_space_bound_lo_tensor = self._state_space_bound_lo_tensor.to(self._th_ddot_tensor)
+        self._state_space_bound_up_tensor = self._state_space_bound_up_tensor.to(self._th_ddot_tensor)
         return RadiallySymmDesStateTask(self.spec, state_des, ExpQuadrErrRewFcn(Q, R), idcs=[1])

@@ -32,7 +32,7 @@ from math import ceil
 from typing import Optional, Union
 
 import numpy as np
-
+import ipdb
 import pyrado
 from pyrado.algorithms.base import Algorithm
 from pyrado.algorithms.utils import ReplayMemory
@@ -41,9 +41,10 @@ from pyrado.exploration.stochastic_action import EpsGreedyExplStrat, SACExplStra
 from pyrado.logger.step import ConsolePrinter, CSVPrinter, StepLogger, TensorBoardPrinter
 from pyrado.policies.base import Policy, TwoHeadedPolicy
 from pyrado.policies.feed_forward.dummy import DummyPolicy, RecurrentDummyPolicy
-from pyrado.sampling.parallel_rollout_sampler import ParallelRolloutSampler
+from pyrado.sampling.parallel_rollout_sampler import ParallelRolloutSampler, ParallelRolloutSamplerTensor
 from pyrado.utils.input_output import print_cbt_once
-
+from pyrado.sampling.step_sequence import StepSequence
+import torch
 
 class ValueBased(Algorithm, ABC):
     """Base class of all value-based algorithms"""
@@ -67,6 +68,7 @@ class ValueBased(Algorithm, ABC):
         num_workers: int,
         logger: StepLogger,
         use_trained_policy_for_refill: bool = False,
+        env_sim = None,
     ):
         r"""
         Constructor
@@ -110,6 +112,7 @@ class ValueBased(Algorithm, ABC):
         super().__init__(save_dir, max_iter, policy, logger)
 
         self._env = env
+        self._env_sim = env_sim
         self._memory = ReplayMemory(memory_size)
         self.gamma = gamma
         self.target_update_intvl = target_update_intvl
@@ -131,7 +134,7 @@ class ValueBased(Algorithm, ABC):
             self.init_expl_policy = RecurrentDummyPolicy(env.spec, policy.hidden_size)
         else:
             self.init_expl_policy = DummyPolicy(env.spec)
-        self.sampler_init = ParallelRolloutSampler(
+        self.sampler_init = ParallelRolloutSamplerTensor(#ParallelRolloutSampler(
             self._env,
             self.init_expl_policy,
             num_workers=num_workers,
@@ -139,7 +142,7 @@ class ValueBased(Algorithm, ABC):
         )
 
         # Create sampler for initial filling of the replay memory and evaluation
-        self.sampler_eval = ParallelRolloutSampler(
+        self.sampler_eval = ParallelRolloutSamplerTensor(# ParallelRolloutSampler(
             self._env,
             self._policy,
             num_workers=num_workers,
@@ -147,6 +150,17 @@ class ValueBased(Algorithm, ABC):
             min_rollouts=100,
             show_progress_bar=True,
         )
+
+        if self._env_sim is None:
+            self._env_sim = self._env
+        self.sampler_transfer = ParallelRolloutSamplerTensor(# ParallelRolloutSampler(
+            self._env_sim,
+            self._policy,
+            num_workers=num_workers,
+            min_steps=None,
+            min_rollouts=1,
+            show_progress_bar=True,
+        )        
 
         self._expl_strat = None  # must be implemented by subclass
         self._sampler = None  # must be implemented by subclass
@@ -162,6 +176,121 @@ class ValueBased(Algorithm, ABC):
     def memory(self) -> ReplayMemory:
         """Get the replay memory."""
         return self._memory
+
+    def get_obs(self, traj):
+        acts = np.insert(traj['data_Vclip'][:,1]/6, 0, 0)
+        obs = np.stack([traj['data_pos'][:,2], traj['data_theta'][:,2], traj['data_vel'][:,2], traj['data_thetadot'][:,2], acts], axis=1)
+        return obs
+
+    def load_memory(self, traj_path=''):
+        from os import listdir
+        from os.path import isfile, join
+        traj_files = [join(traj_path, f) for f in listdir(traj_path) if isfile(join(traj_path, f))]
+        # trajs = [ ]
+        rollouts = []
+        for file in traj_files:
+            traj = io.loadmat(file)
+            obs_hist_np = self.get_obs(traj)
+            act_hist_np = traj['data_action'][:,1:]
+
+            ## step through env
+            if self.grad_vi:
+                th_ddot_hist = self.compute_th_ddot(traj)
+                obs = torch.tensor(obs_hist_np).requires_grad_(True)
+                act = torch.tensor(act_hist_np).requires_grad_(True)
+                th_ddot = torch.tensor(th_ddot_hist)
+                next_obs, rew, dones, info = env.step_diff_state(obs, act, th_ddot)
+                obs_grad = torch.stack([torch.cat(torch.autograd.grad(next_obs[:,i].sum(), [obs, act], retain_graph=True), dim=-1) for i in range(next_obs.shape[1])], dim=1).detach().numpy()
+                rew_grad = torch.cat(torch.autograd.grad(rew.sum(), [obs, act]), dim=-1).detach().numpy()
+                rew_np = rew.detach().numpy()
+                obs_hist = []
+                act_hist = []
+                rew_hist = []
+                env_info_hist = []
+                for i in range(obs.shape[0]):
+                    obs_hist.append(obs_hist_np[i])
+                    act_hist.append(act_hist_np[i])
+                    rew_hist.append(rew_np[i])
+                    env_info = {}
+                    env_info['obs_grad'] = obs_grad[i]
+                    env_info['rew_grad'] = rew_grad[i]
+                    env_info_hist.append(env_info)
+            else:
+                obs = torch.tensor(obs_hist_np).requires_grad_(True)
+                act = torch.tensor(act_hist_np).requires_grad_(True)
+                next_obs, rew, dones, info = env.step_diff_state(obs, act)
+                rew_np = rew.detach().numpy()
+                obs_hist = []
+                act_hist = []
+                rew_hist = []
+                env_info_hist = []
+                for i in range(obs.shape[0]):
+                    obs_hist.append(obs_hist_np[i])
+                    act_hist.append(act_hist_np[i])
+                    rew_hist.append(rew_np[i])
+                    env_info = {np.zeros(obs_hist_np[i].shape)}
+                    env_info_hist.append(env_info)
+            res = StepSequence(
+            observations=obs_hist,
+            actions=act_hist,
+            rewards=rew_hist,
+            env_infos=env_info_hist,
+            complete=True,  # the rollout function always returns complete paths
+            continuous=False,
+            )
+            rollouts.append(res)
+        self._memory.push(results)
+
+    def tranform_rollouts(self, ros):
+        from os import listdir
+        from os.path import isfile, join
+        # trajs = [ ]
+        # ros = self.memory._memory
+        rollouts = []
+        # for i in range(size):
+        # steps = ros[self.batch_size]
+        # traj = io.loadmat(file)
+        for ro in ros:
+            obs_hist_np = ro.observations
+            act_hist_np = ro.actions
+            th_ddot_np = ro.th_ddot
+
+            ## step through env
+            obs = torch.tensor(obs_hist_np).requires_grad_(True)[:-1].float()
+            act = torch.tensor(act_hist_np).requires_grad_(True).float()
+            th_ddot = torch.tensor(th_ddot_np)[:-1].float()
+            # ipdb.set_trace()
+            next_obs, rew, dones, info = self._env_sim.step_diff_state(obs, act, th_ddot)
+            obs_grad = torch.stack([torch.cat(torch.autograd.grad(next_obs[:,i].sum(), [obs, act], retain_graph=True), dim=-1) for i in range(next_obs.shape[1])], dim=1).detach().numpy()
+            rew_grad = torch.cat(torch.autograd.grad(rew.sum(), [obs, act]), dim=-1).detach().unsqueeze(1).numpy()
+            rew_np = rew.detach().numpy()
+            obs_hist = []
+            act_hist = []
+            rew_hist = []
+            th_ddot_hist = []
+            env_info_hist = []
+            for i in range(obs.shape[0]):
+                obs_hist.append(obs_hist_np[i])
+                act_hist.append(act_hist_np[i])
+                rew_hist.append(rew_np[i])
+                th_ddot_hist.append(th_ddot_np[i])
+                env_info = {}
+                env_info['obs_grad'] = obs_grad[i]
+                env_info['rew_grad'] = rew_grad[i]
+                env_info_hist.append(env_info)
+            obs_hist.append(obs_hist_np[obs.shape[0]])
+            th_ddot_hist.append(th_ddot_np[obs.shape[0]])
+            # ipdb.set_trace()
+            res = StepSequence(
+            observations=obs_hist,
+            actions=act_hist,
+            rewards=rew_hist,
+            env_infos=env_info_hist,
+            th_ddot=th_ddot_hist,
+            complete=True,  # the rollout function always returns complete paths
+            )
+            rollouts.append(res)
+        return rollouts
 
     def step(self, snapshot_mode: str, meta_info: dict = None):
         if self._memory.isempty:
@@ -212,6 +341,123 @@ class ValueBased(Algorithm, ABC):
 
         # Use data in the memory to update the policy and the Q-functions
         self.update()
+
+    def step_sim2sim(self, snapshot_mode: str, meta_info: dict = None):
+        if self._memory.isempty:
+            # Warm-up phase
+            print_cbt_once(f"Empty replay memory, collecting {self.num_init_memory_steps} samples.", "w")
+            # Sample steps and store them in the replay memory
+            # Save old bounds from the sampler
+            rollouts = []
+            for n in range(self.num_init_rollouts):
+                ros = self.sampler_transfer.sample()
+                rollouts += ros
+            # Revert back to initial parameters
+            ros = rollouts
+        else:
+            # Sample steps and store them in the replay memory
+            ros = self.sampler_transfer.sample()
+        ros_with_jac = self.tranform_rollouts(ros)
+
+        self._memory.push(ros_with_jac)
+        cnt_samples_step = sum([ro.length for ro in ros])
+        self._cnt_samples += cnt_samples_step  # don't count the evaluation samples
+
+        # Log metrics computed from the old policy (before the update)
+        if self._curr_iter % self.logger.print_intvl == 0:
+            ros = self.sampler_eval.sample()
+            rets = [ro.undiscounted_return() for ro in ros]
+            ret_max = np.max(rets)
+            ret_med = np.median(rets)
+            ret_avg = np.mean(rets)
+            ret_min = np.min(rets)
+            ret_std = np.std(rets)
+        else:
+            ret_max, ret_med, ret_avg, ret_min, ret_std = 5 * [-pyrado.inf]  # dummy values
+        self.logger.add_value("max return", ret_max, 4)
+        self.logger.add_value("median return", ret_med, 4)
+        self.logger.add_value("avg return", ret_avg, 4)
+        self.logger.add_value("min return", ret_min, 4)
+        self.logger.add_value("std return", ret_std, 4)
+        self.logger.add_value("avg memory reward", self._memory.avg_reward(), 4)
+        self.logger.add_value("avg rollout length", np.mean([ro.length for ro in ros]), 4)
+        self.logger.add_value("num total samples", self._cnt_samples)
+
+        # self.plot_trajectories(ros)
+        self.plot_trajectories_actions(ros)
+        # Save snapshot data
+        self.make_snapshot(snapshot_mode, float(ret_avg), meta_info)
+
+        # Use data in the memory to update the policy and the Q-functions
+        self.num_batch_updates = cnt_samples_step
+        self.batch_size_used = min(len(self._memory)-2, self.batch_size)
+        # self.update()
+
+    def plot_trajectories(self, ros):
+        rets = [ro.undiscounted_return() for ro in ros]
+        for ro in ros:
+            if ro.undiscounted_return() == np.min(rets):
+                ro_min = ro
+        ipdb.set_trace()
+        states = ro_min.observations[:-1]
+        actions = ro_min.actions
+        import matplotlib.pyplot as plt
+        dt=0.05
+        plt.plot(np.arange(len(states))*dt, states[:,0], label='x')
+        plt.plot(np.arange(len(states))*dt, states[:,1], label='th')
+        plt.plot(np.arange(len(states))*dt, states[:,2], label='xdot')
+        plt.plot(np.arange(len(states))*dt, states[:,3], label='thdot')
+        plt.plot(np.arange(len(states))*dt, states[:,4] + actions[:,0], label='act')
+        plt.legend()
+        plt.savefig('saved_plots/states_grad_vi_wild_false.png')
+
+    def plot_trajectories_actions(self, ros):
+        rets = [ro.undiscounted_return() for ro in ros]
+        for ro in ros:
+            if ro.undiscounted_return() == np.min(rets):
+                ro_min = ro
+        states = ro_min.observations[:-1]
+        actions = ro_min.actions
+        import matplotlib.pyplot as plt
+        dt=0.05
+        T = 200
+        plt.plot(np.arange(len(states[:T]))*dt, np.clip(states[:T,4] + np.clip(actions[:T,0], -0.5, 0.5), -1, 1), label='act_min')
+        for i in range(5):
+            plt.plot(np.arange(len(ros[i].observations[:-1][:T]))*dt, np.clip(ros[i].observations[:-1][:T,4] + np.clip(ros[i].actions[:T,0], -0.5, 0.5), -1, 1), label=f'act_{i}')
+        plt.legend()
+        plt.savefig('saved_plots/policy_actions_rlclip05_grad_vi_wild_false_again.png')
+        ipdb.set_trace()
+
+    def step_sim2real(self, snapshot_mode: str, meta_info: dict = None):
+        self.load_memory()
+        self._cnt_samples = self._memory._memory.length  # don't count the evaluation samples
+
+        # Log metrics computed from the old policy (before the update)
+        # if self._curr_iter % self.logger.print_intvl == 0:
+        #     ros = self.sampler_eval.sample()
+        #     rets = [ro.undiscounted_return() for ro in ros]
+        #     ret_max = np.max(rets)
+        #     ret_med = np.median(rets)
+        #     ret_avg = np.mean(rets)
+        #     ret_min = np.min(rets)
+        #     ret_std = np.std(rets)
+        # else:
+        #     ret_max, ret_med, ret_avg, ret_min, ret_std = 5 * [-pyrado.inf]  # dummy values
+        # self.logger.add_value("max return", ret_max, 4)
+        # self.logger.add_value("median return", ret_med, 4)
+        # self.logger.add_value("avg return", ret_avg, 4)
+        # self.logger.add_value("min return", ret_min, 4)
+        # self.logger.add_value("std return", ret_std, 4)
+        # self.logger.add_value("avg memory reward", self._memory.avg_reward(), 4)
+        # self.logger.add_value("avg rollout length", np.mean([ro.length for ro in ros]), 4)
+        # self.logger.add_value("num total samples", self._cnt_samples)
+        self.num_batch_updates = 300#cnt_samples_step
+        self.update()
+
+        # Save snapshot data
+        self.make_snapshot(snapshot_mode, 300, meta_info)
+        # Use data in the memory to update the policy and the Q-functions
+
 
     @abstractmethod
     def update(self):

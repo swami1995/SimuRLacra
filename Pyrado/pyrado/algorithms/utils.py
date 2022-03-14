@@ -40,7 +40,7 @@ from pyrado.exploration.stochastic_action import StochasticActionExplStrat
 from pyrado.sampling.sampler import SamplerBase
 from pyrado.sampling.step_sequence import StepSequence
 from pyrado.utils.input_output import print_cbt
-
+import ipdb
 
 class ActionStatistics(NamedTuple):
     r"""
@@ -105,6 +105,7 @@ class ReplayMemory:
         :param ros: list of rollouts or one concatenated rollout
         :param truncate_last: remove the last step from each rollout, forwarded to `StepSequence.concat`
         """
+        # ipdb.set_trace()
         if isinstance(ros, list):
             # Concatenate given rollouts if necessary
             ros = StepSequence.concat(ros)

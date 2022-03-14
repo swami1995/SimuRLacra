@@ -31,7 +31,9 @@ from copy import deepcopy
 from typing import Optional, Tuple, Union
 
 import numpy as np
+import torch
 import torch as to
+import torch.nn.functional as F
 import torch.nn as nn
 from tqdm import tqdm
 
@@ -45,7 +47,7 @@ from pyrado.exploration.stochastic_action import SACExplStrat
 from pyrado.logger.step import StepLogger
 from pyrado.policies.base import Policy, TwoHeadedPolicy
 from pyrado.sampling.cvar_sampler import CVaRSampler
-from pyrado.sampling.parallel_rollout_sampler import ParallelRolloutSampler
+from pyrado.sampling.parallel_rollout_sampler import ParallelRolloutSampler, ParallelRolloutSamplerTensor
 from pyrado.utils.data_processing import standardize
 from pyrado.utils.math import soft_update_
 import ipdb
@@ -99,6 +101,8 @@ class SAC(ValueBased):
         num_workers: int = 4,
         logger: Optional[StepLogger] = None,
         use_trained_policy_for_refill: bool = False,
+        env_sim = None,
+        num_init_rollouts = 1,
     ):
         r"""
         Constructor
@@ -165,6 +169,7 @@ class SAC(ValueBased):
             num_workers=num_workers,
             logger=logger,
             use_trained_policy_for_refill=use_trained_policy_for_refill,
+            env_sim=env_sim,
         )
 
         self.qfcn_1 = qfcn_1
@@ -175,10 +180,17 @@ class SAC(ValueBased):
         self.learn_ent_coeff = learn_ent_coeff
         self.standardize_rew = standardize_rew
         self.rew_scale = rew_scale
+        self.num_updates = 0
+        self.num_update_calls = 0
+        self.grad_vi = False
+        self.num_init_rollouts = num_init_rollouts
+        self.batch_size_used = batch_size
+        # self._env_sim = env_sim
 
         # Create sampler for exploration during training
         self._expl_strat = SACExplStrat(self._policy)
-        self._sampler = ParallelRolloutSampler(
+        self._sampler = ParallelRolloutSamplerTensor(
+        # self._sampler = ParallelRolloutSampler(
             self._env,
             self._expl_strat,
             num_workers=num_workers if min_steps != 1 else 1,
@@ -235,7 +247,7 @@ class SAC(ValueBased):
         qfcn_2_grad_norm = to.zeros(self.num_batch_updates)
         policy_losses = to.zeros(self.num_batch_updates)
         policy_grad_norm = to.zeros(self.num_batch_updates)
-
+        self.num_update_calls +=1
         for b in tqdm(
             range(self.num_batch_updates),
             total=self.num_batch_updates,
@@ -245,9 +257,10 @@ class SAC(ValueBased):
             leave=False,
         ):
             # Sample steps and the associated next step from the replay memory
-            steps, next_steps = self._memory.sample(self.batch_size)
+            steps, next_steps = self._memory.sample(self.batch_size_used)
             steps.torch(data_type=to.get_default_dtype())
             next_steps.torch(data_type=to.get_default_dtype())
+            # ipdb.set_trace()
 
             # Standardize and optionally scale the rewards
             if self.standardize_rew:
@@ -265,7 +278,7 @@ class SAC(ValueBased):
             else:
                 # next_act_expl1, _ = self._expl_strat(next_steps.observations)
                 act_expl, log_probs_expl = self._expl_strat(steps.observations)
-            next_steps.observations[:,-1] = act_expl[:,0]
+            # next_steps.observations[:,-1] = act_expl[:,0]
             expl_strat_stds[b] = to.mean(self._expl_strat.std.data)
 
             # Update the the entropy coefficient
@@ -275,34 +288,95 @@ class SAC(ValueBased):
                 self._ent_coeff_optim.zero_grad()
                 ent_coeff_loss.backward()
                 self._ent_coeff_optim.step()
+            if not self.grad_vi:
+                with to.no_grad():
+                    # Create masks for the non-final observations
+                    not_done = to.from_numpy(1.0 - steps.done).to(device=self.policy.device, dtype=to.get_default_dtype()).view(-1, 1)
 
-            with to.no_grad():
-                # Create masks for the non-final observations
-                not_done = to.from_numpy(1.0 - steps.done).to(device=self.policy.device, dtype=to.get_default_dtype())
-
+                    # Compute the (next)state-(next)action values Q(s',a') from the target networks
+                    if self.policy.is_recurrent:
+                        next_act_expl, next_log_probs, _ = self._expl_strat(
+                            next_steps.observations, next_steps.hidden_states
+                        )
+                    else:
+                        next_act_expl, next_log_probs = self._expl_strat(next_steps.observations)
+                    next_obs_act = to.cat([next_steps.observations.to(self.policy.device), next_act_expl], dim=1)
+                    next_q_val_target_1 = self.qfcn_targ_1(next_obs_act)
+                    next_q_val_target_2 = self.qfcn_targ_2(next_obs_act)
+                    next_q_val_target_min = to.min(next_q_val_target_1, next_q_val_target_2)
+                    next_q_val_target_min -= self.ent_coeff * next_log_probs  # add entropy term
+                    # TD error (including entropy term)
+                    next_q_val = rewards.view(-1, 1) + not_done.view(-1, 1) * self.gamma * next_q_val_target_min
+            else:
+                                    # Create masks for the non-final observations
+                not_done = to.from_numpy(1.0 - steps.done).to(device=self.policy.device, dtype=to.get_default_dtype()).view(-1, 1)
+                next_obs = next_steps.observations.to(self.policy.device)
+                next_obs.requires_grad_(True)
                 # Compute the (next)state-(next)action values Q(s',a') from the target networks
                 if self.policy.is_recurrent:
                     next_act_expl, next_log_probs, _ = self._expl_strat(
-                        next_steps.observations, next_steps.hidden_states
+                        next_obs, next_steps.hidden_states
                     )
                 else:
-                    next_act_expl, next_log_probs = self._expl_strat(next_steps.observations)
-                next_obs_act = to.cat([next_steps.observations.to(self.policy.device), next_act_expl], dim=1)
+                    next_act_expl, next_log_probs = self._expl_strat(next_obs)
+                next_obs_act = to.cat([next_obs, next_act_expl.detach().clone()], dim=1)
                 next_q_val_target_1 = self.qfcn_targ_1(next_obs_act)
                 next_q_val_target_2 = self.qfcn_targ_2(next_obs_act)
                 next_q_val_target_min = to.min(next_q_val_target_1, next_q_val_target_2)
-                next_q_val_target_min -= self.ent_coeff * next_log_probs  # add entropy term
+                next_q_val_target_min -= self.ent_coeff * next_log_probs#.detach()  # add entropy term
                 # TD error (including entropy term)
-                next_q_val = rewards.view(-1, 1) + not_done.view(-1, 1) * self.gamma * next_q_val_target_min
+                next_q_val = (rewards.view(-1, 1) + not_done.view(-1, 1) * self.gamma * next_q_val_target_min).detach().clone()
+                # ipdb.set_trace()
+                grad_q = to.autograd.grad(next_q_val_target_min.sum(), next_obs)[0].unsqueeze(1)
+                grad_transition = torch.clamp(steps.env_infos['obs_grad'], -5,5)
+                grad_transition_bool = 1-torch.logical_or(steps.env_infos['obs_grad'] > 5 , steps.env_infos['obs_grad'] < -5).sum(dim=1).bool().float()
+                next_q_grad = steps.env_infos['rew_grad'] + not_done.view(-1,1,1) * \
+                                        self.gamma * to.bmm(grad_q, grad_transition)
+                next_q_grad_uc = next_q_grad.squeeze(1).detach().clone()
+                next_q_grad = next_q_grad_uc#, -5, 5)
 
             # Compute the (current)state-(current)action values Q(s,a) from the two Q-networks
             # E_{(s_t, a_t) ~ D} [1/2 * (Q_i(s_t, a_t) - r_t - gamma * E_{s_{t+1} ~ p} [V(s_{t+1})] )^2]
-            curr_obs_act = to.cat([steps.observations, steps.actions], dim=1).to(self.policy.device)
+            curr_obs_act = to.cat([steps.observations, steps.actions], dim=1).to(self.policy.device).requires_grad_(True)
+            state_dim = steps.observations.shape[1]
             q_val_1 = self.qfcn_1(curr_obs_act)
             q_val_2 = self.qfcn_2(curr_obs_act)
             q_1_loss = nn.functional.mse_loss(q_val_1, next_q_val)
             q_2_loss = nn.functional.mse_loss(q_val_2, next_q_val)
             q_loss = (q_1_loss + q_2_loss) / 2.0  # averaging the Q-functions is taken from [3]
+            if self.grad_vi:
+                qf1_grad = to.cat(to.autograd.grad(q_val_1.sum(), curr_obs_act,retain_graph=True,create_graph=True), dim=-1)
+                qf2_grad = to.cat(to.autograd.grad(q_val_2.sum(), curr_obs_act,retain_graph=True,create_graph=True), dim=-1)
+                # ipdb.set_trace()
+                qf_loss_action = (F.mse_loss(qf1_grad[:, state_dim:], next_q_grad[:, state_dim:]))#, reduction='none')*grad_transition_bool[:, state_dim:]).mean()
+                qf_loss_action += (F.mse_loss(qf2_grad[:, state_dim:], next_q_grad[:, state_dim:]))#, reduction='none')*grad_transition_bool[:, state_dim:]).mean()
+                qf_loss_state = (F.mse_loss(qf1_grad[:, :state_dim], next_q_grad[:, :state_dim]))#, reduction='none')*grad_transition_bool[:, :state_dim]).mean()
+                qf_loss_state += (F.mse_loss(qf2_grad[:, :state_dim], next_q_grad[:, :state_dim]))#, reduction='none')*grad_transition_bool[:, :state_dim]).mean()
+                if self.num_updates % 500==0:
+                    grad_q = to.autograd.grad(q_loss, self.qfcn_1.net.output_layer.weight, retain_graph=True)[0].norm()
+                    grad_action = to.autograd.grad(qf_loss_action, self.qfcn_1.net.output_layer.weight, retain_graph=True)[0].norm()
+                    grad_state = to.autograd.grad(qf_loss_state, self.qfcn_1.net.output_layer.weight, retain_graph=True)[0].norm()
+                    print("grad_state, action, Q: ", grad_state, grad_action, grad_q)
+
+                    if to.isnan(grad_state):
+                        ipdb.set_trace()
+                    if self.num_updates ==0:
+                        self.act_coeff = grad_q/grad_action/(2)
+                        self.state_coeff = grad_q/grad_state/(2)
+                    else:
+                        self.act_coeff = 0.3*self.act_coeff + 0.7*(grad_q/grad_action)/(2*(self.num_update_calls/30+1))
+                        self.state_coeff = 0.3*self.act_coeff + 0.7*(grad_q/grad_state)/(2*(self.num_update_calls/30+1))
+                    if self.num_updates % 500==0:
+                        self.logger.add_value("grad2_state", grad_state)
+                        self.logger.add_value("grad2_action", grad_action)
+                        self.logger.add_value("grad_q", grad_q)
+
+
+                # qf_loss += F.mse_loss(qf1_grad, next_q_grad)
+                # qf_loss += F.mse_loss(qf2_grad, next_q_grad)
+                q_loss += (qf_loss_action)*self.act_coeff + qf_loss_state*self.state_coeff
+            # ipdb.set_trace()
+
             qfcn_1_losses[b] = q_1_loss.data
             qfcn_2_losses[b] = q_2_loss.data
 
@@ -321,7 +395,7 @@ class SAC(ValueBased):
             min_q_val_expl = to.min(q_1_val_expl, q_2_val_expl)
             # smooth_loss = to.abs(act_expl - next_act_expl1).mean()
             smooth_loss = (to.abs(act_expl)**2).mean()
-            policy_loss = to.mean(self.ent_coeff * log_probs_expl - min_q_val_expl + 0*smooth_loss)  # self.ent_coeff is detached
+            policy_loss = to.mean(self.ent_coeff * log_probs_expl - min_q_val_expl + 2*smooth_loss)  # self.ent_coeff is detached
             policy_losses[b] = policy_loss.data
 
             # Update the policy
@@ -334,7 +408,7 @@ class SAC(ValueBased):
             if (self._curr_iter * self.num_batch_updates + b) % self.target_update_intvl == 0:
                 soft_update_(self.qfcn_targ_1, self.qfcn_1, self.tau)
                 soft_update_(self.qfcn_targ_2, self.qfcn_2, self.tau)
-
+            self.num_updates +=1
         # Update the learning rate if the schedulers have been specified
         if self._lr_scheduler_policy is not None:
             self._lr_scheduler_policy.step()
@@ -347,9 +421,208 @@ class SAC(ValueBased):
         self.logger.add_value("avg grad norm policy", to.mean(policy_grad_norm))
         self.logger.add_value("avg expl strat std", to.mean(expl_strat_stds))
         self.logger.add_value("ent_coeff", self.ent_coeff)
+        if self.grad_vi:
+            self.logger.add_value("grad_state", next_q_grad_uc[:,:-1].norm(dim=-1).median())
+            self.logger.add_value("grad_action", next_q_grad_uc[:,-1:].norm(dim=-1).median())
+            self.logger.add_value("grad_transition", steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1).median())
+            self.logger.add_value("grad_transition_max", steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1).max())
+            self.logger.add_value("grad_transition_high", (steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1)>2).sum())
+        # self.logger.add_value("grad_state_high", (steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1)>2).sum())
         if self._lr_scheduler_policy is not None:
             self.logger.add_value("avg lr policy", np.mean(self._lr_scheduler_policy.get_last_lr()), 6)
             self.logger.add_value("avg lr critic", np.mean(self._lr_scheduler_qfcns.get_last_lr()), 6)
+
+    # def update_real(self):
+    #     """Update the policy's and Q-functions' parameters on transitions sampled from the replay memory."""
+    #     # Containers for logging
+    #     expl_strat_stds = to.zeros(self.num_batch_updates)
+    #     qfcn_1_losses = to.zeros(self.num_batch_updates)
+    #     qfcn_2_losses = to.zeros(self.num_batch_updates)
+    #     qfcn_1_grad_norm = to.zeros(self.num_batch_updates)
+    #     qfcn_2_grad_norm = to.zeros(self.num_batch_updates)
+    #     policy_losses = to.zeros(self.num_batch_updates)
+    #     policy_grad_norm = to.zeros(self.num_batch_updates)
+    #     self.num_update_calls +=1
+    #     for b in tqdm(
+    #         range(self.num_batch_updates),
+    #         total=self.num_batch_updates,
+    #         desc="Updating",
+    #         unit="batches",
+    #         file=sys.stdout,
+    #         leave=False,
+    #     ):
+    #         # Sample steps and the associated next step from the replay memory
+    #         steps, next_steps = self._memory.sample(self.batch_size)
+    #         steps.torch(data_type=to.get_default_dtype())
+    #         next_steps.torch(data_type=to.get_default_dtype())
+    #         # ipdb.set_trace()
+
+    #         # Standardize and optionally scale the rewards
+    #         if self.standardize_rew:
+    #             rewards = standardize(steps.rewards)
+    #         else:
+    #             rewards = steps.rewards
+    #         rewards = rewards.to(self.policy.device)
+    #         rewards *= self.rew_scale
+
+    #         # Explore and compute the current log probs (later used for policy update)
+    #         # ipdb.set_trace()
+    #         if self.policy.is_recurrent:
+    #             # next_act_expl1, _, _ = self._expl_strat(next_steps.observations, next_steps.hidden_states)
+    #             act_expl, log_probs_expl, _ = self._expl_strat(steps.observations, steps.hidden_states)
+    #         else:
+    #             # next_act_expl1, _ = self._expl_strat(next_steps.observations)
+    #             act_expl, log_probs_expl = self._expl_strat(steps.observations)
+    #         # next_steps.observations[:,-1] = act_expl[:,0]
+    #         expl_strat_stds[b] = to.mean(self._expl_strat.std.data)
+
+    #         # Update the the entropy coefficient
+    #         if self.learn_ent_coeff:
+    #             # Compute entropy coefficient loss
+    #             ent_coeff_loss = -to.mean(self._log_ent_coeff * (log_probs_expl.detach() + self.target_entropy))
+    #             self._ent_coeff_optim.zero_grad()
+    #             ent_coeff_loss.backward()
+    #             self._ent_coeff_optim.step()
+    #         if not self.grad_vi:
+    #             with to.no_grad():
+    #                 # Create masks for the non-final observations
+    #                 not_done = to.from_numpy(1.0 - steps.done).to(device=self.policy.device, dtype=to.get_default_dtype())
+
+    #                 # Compute the (next)state-(next)action values Q(s',a') from the target networks
+    #                 if self.policy.is_recurrent:
+    #                     next_act_expl, next_log_probs, _ = self._expl_strat(
+    #                         next_steps.observations, next_steps.hidden_states
+    #                     )
+    #                 else:
+    #                     next_act_expl, next_log_probs = self._expl_strat(next_steps.observations)
+    #                 next_obs_act = to.cat([next_steps.observations.to(self.policy.device), next_act_expl], dim=1)
+    #                 next_q_val_target_1 = self.qfcn_targ_1(next_obs_act)
+    #                 next_q_val_target_2 = self.qfcn_targ_2(next_obs_act)
+    #                 next_q_val_target_min = to.min(next_q_val_target_1, next_q_val_target_2)
+    #                 next_q_val_target_min -= self.ent_coeff * next_log_probs  # add entropy term
+    #                 # TD error (including entropy term)
+    #                 next_q_val = rewards.view(-1, 1) + not_done.view(-1, 1) * self.gamma * next_q_val_target_min
+    #         else:
+    #                                 # Create masks for the non-final observations
+    #             not_done = to.from_numpy(1.0 - steps.done).to(device=self.policy.device, dtype=to.get_default_dtype())
+    #             next_obs = next_steps.observations.to(self.policy.device)
+    #             next_obs.requires_grad_(True)
+    #             # Compute the (next)state-(next)action values Q(s',a') from the target networks
+    #             if self.policy.is_recurrent:
+    #                 next_act_expl, next_log_probs, _ = self._expl_strat(
+    #                     next_obs, next_steps.hidden_states
+    #                 )
+    #             else:
+    #                 next_act_expl, next_log_probs = self._expl_strat(next_obs)
+    #             next_obs_act = to.cat([next_obs, next_act_expl.detach().clone()], dim=1)
+    #             next_q_val_target_1 = self.qfcn_targ_1(next_obs_act)
+    #             next_q_val_target_2 = self.qfcn_targ_2(next_obs_act)
+    #             next_q_val_target_min = to.min(next_q_val_target_1, next_q_val_target_2)
+    #             next_q_val_target_min -= self.ent_coeff * next_log_probs#.detach()  # add entropy term
+    #             # TD error (including entropy term)
+    #             next_q_val = (rewards.view(-1, 1) + not_done.view(-1, 1) * self.gamma * next_q_val_target_min).detach().clone()
+    #             # ipdb.set_trace()
+    #             grad_q = to.autograd.grad(next_q_val_target_min.sum(), next_obs)[0].unsqueeze(1)
+    #             grad_transition = torch.clamp(steps.env_infos['obs_grad'], -5,5)
+    #             next_q_grad = steps.env_infos['rew_grad'] + not_done.unsqueeze(1).unsqueeze(1) * \
+    #                                     self.gamma * to.bmm(grad_q, grad_transition)
+    #             next_q_grad_uc = next_q_grad.squeeze(1).detach().clone()
+    #             next_q_grad = next_q_grad_uc#, -5, 5)
+
+    #         # Compute the (current)state-(current)action values Q(s,a) from the two Q-networks
+    #         # E_{(s_t, a_t) ~ D} [1/2 * (Q_i(s_t, a_t) - r_t - gamma * E_{s_{t+1} ~ p} [V(s_{t+1})] )^2]
+    #         curr_obs_act = to.cat([steps.observations, steps.actions], dim=1).to(self.policy.device).requires_grad_(True)
+    #         state_dim = steps.observations.shape[1]
+    #         q_val_1 = self.qfcn_1(curr_obs_act)
+    #         q_val_2 = self.qfcn_2(curr_obs_act)
+    #         q_1_loss = nn.functional.mse_loss(q_val_1, next_q_val)
+    #         q_2_loss = nn.functional.mse_loss(q_val_2, next_q_val)
+    #         q_loss = (q_1_loss + q_2_loss) / 2.0  # averaging the Q-functions is taken from [3]
+    #         if self.grad_vi:
+    #             qf1_grad = to.cat(to.autograd.grad(q_val_1.sum(), curr_obs_act,retain_graph=True,create_graph=True), dim=-1)
+    #             qf2_grad = to.cat(to.autograd.grad(q_val_2.sum(), curr_obs_act,retain_graph=True,create_graph=True), dim=-1)
+    #             qf_loss_action = F.mse_loss(qf1_grad[:, state_dim:], next_q_grad[:, state_dim:])
+    #             qf_loss_action += F.mse_loss(qf2_grad[:, state_dim:], next_q_grad[:, state_dim:])
+    #             qf_loss_state = F.mse_loss(qf1_grad[:, :state_dim], next_q_grad[:, :state_dim])            
+    #             qf_loss_state += F.mse_loss(qf2_grad[:, :state_dim], next_q_grad[:, :state_dim])
+    #             if self.num_updates % 500==0:
+    #                 grad_q = to.autograd.grad(q_loss, self.qfcn_1.net.output_layer.weight, retain_graph=True)[0].norm()
+    #                 grad_action = to.autograd.grad(qf_loss_action, self.qfcn_1.net.output_layer.weight, retain_graph=True)[0].norm()
+    #                 grad_state = to.autograd.grad(qf_loss_state, self.qfcn_1.net.output_layer.weight, retain_graph=True)[0].norm()
+    #                 print("grad_state, action, Q: ", grad_state, grad_action, grad_q)
+
+    #                 if to.isnan(grad_state):
+    #                     ipdb.set_trace()
+    #                 if self.num_updates ==0:
+    #                     self.act_coeff = 1#grad_q/grad_action/2
+    #                     self.state_coeff = 1#grad_q/grad_state/2
+    #                 else:
+    #                     self.act_coeff = 0.3*self.act_coeff + 0.7*(grad_q/grad_action/(2*(self.num_update_calls/30+1)))
+    #                     self.state_coeff = 0.3*self.act_coeff + 0.7*(grad_q/grad_state)/(2*(self.num_update_calls/30+1))
+
+    #                 self.logger.add_value("grad2_state", grad_state)
+    #                 self.logger.add_value("grad2_action", grad_action)
+    #                 self.logger.add_value("grad_q", grad_q)
+
+
+    #             # qf_loss += F.mse_loss(qf1_grad, next_q_grad)
+    #             # qf_loss += F.mse_loss(qf2_grad, next_q_grad)
+    #             q_loss += (qf_loss_action)*self.act_coeff + qf_loss_state*self.state_coeff
+    #         # ipdb.set_trace()
+
+    #         qfcn_1_losses[b] = q_1_loss.data
+    #         qfcn_2_losses[b] = q_2_loss.data
+
+    #         # Update the Q-fcns
+    #         self._optim_qfcns.zero_grad()
+    #         q_loss.backward()
+    #         qfcn_1_grad_norm[b] = Algorithm.clip_grad(self.qfcn_1, None)
+    #         qfcn_2_grad_norm[b] = Algorithm.clip_grad(self.qfcn_2, None)
+    #         self._optim_qfcns.step()
+
+    #         # Compute the policy loss
+    #         # E_{s_t ~ D, eps_t ~ N} [log( pi( f(eps_t; s_t) ) ) - Q(s_t, f(eps_t; s_t))]
+    #         curr_obs_act_expl = to.cat([steps.observations.to(self.policy.device), act_expl], dim=1)
+    #         q_1_val_expl = self.qfcn_1(curr_obs_act_expl)
+    #         q_2_val_expl = self.qfcn_2(curr_obs_act_expl)
+    #         min_q_val_expl = to.min(q_1_val_expl, q_2_val_expl)
+    #         # smooth_loss = to.abs(act_expl - next_act_expl1).mean()
+    #         smooth_loss = (to.abs(act_expl)**2).mean()
+    #         policy_loss = to.mean(self.ent_coeff * log_probs_expl - min_q_val_expl + 2*smooth_loss)  # self.ent_coeff is detached
+    #         policy_losses[b] = policy_loss.data
+
+    #         # Update the policy
+    #         self._optim_policy.zero_grad()
+    #         policy_loss.backward()
+    #         policy_grad_norm[b] = Algorithm.clip_grad(self._expl_strat.policy, self.max_grad_norm)
+    #         self._optim_policy.step()
+
+    #         # Soft-update the target networks
+    #         if (self._curr_iter * self.num_batch_updates + b) % self.target_update_intvl == 0:
+    #             soft_update_(self.qfcn_targ_1, self.qfcn_1, self.tau)
+    #             soft_update_(self.qfcn_targ_2, self.qfcn_2, self.tau)
+    #         self.num_updates +=1
+    #     # Update the learning rate if the schedulers have been specified
+    #     if self._lr_scheduler_policy is not None:
+    #         self._lr_scheduler_policy.step()
+    #         self._lr_scheduler_qfcns.step()
+
+    #     # Logging
+    #     self.logger.add_value("Q1 loss", to.mean(qfcn_1_losses))
+    #     self.logger.add_value("Q2 loss", to.mean(qfcn_2_losses))
+    #     self.logger.add_value("policy loss", to.mean(policy_losses))
+    #     self.logger.add_value("avg grad norm policy", to.mean(policy_grad_norm))
+    #     self.logger.add_value("avg expl strat std", to.mean(expl_strat_stds))
+    #     self.logger.add_value("ent_coeff", self.ent_coeff)
+    #     self.logger.add_value("grad_state", next_q_grad_uc[:,:-1].norm(dim=-1).median())
+    #     self.logger.add_value("grad_action", next_q_grad_uc[:,-1:].norm(dim=-1).median())
+    #     self.logger.add_value("grad_transition", steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1).median())
+    #     self.logger.add_value("grad_transition_max", steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1).max())
+    #     self.logger.add_value("grad_transition_high", (steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1)>2).sum())
+    #     # self.logger.add_value("grad_state_high", (steps.env_infos['obs_grad'].norm(dim=-1).norm(dim=-1)>2).sum())
+    #     if self._lr_scheduler_policy is not None:
+    #         self.logger.add_value("avg lr policy", np.mean(self._lr_scheduler_policy.get_last_lr()), 6)
+    #         self.logger.add_value("avg lr critic", np.mean(self._lr_scheduler_qfcns.get_last_lr()), 6)
 
     def reset(self, seed: Optional[int] = None):
         # Reset samplers, replay memory, exploration strategy, internal variables and the random seeds
@@ -408,8 +681,12 @@ class SAC(ValueBased):
         env, policy, extra = super().load_snapshot(parsed_args)
 
         # Algorithm specific
-        ex_dir = self._save_dir or getattr(parsed_args, "dir", None)
-        extra["qfcn_target1"] = pyrado.load("qfcn_target1.pt", ex_dir, obj=self.qfcn_targ_1, verbose=True)
-        extra["qfcn_target2"] = pyrado.load("qfcn_target2.pt", ex_dir, obj=self.qfcn_targ_2, verbose=True)
+        ex_dir = getattr(parsed_args, "dir", None) or self._save_dir
+        extra["qfcn_target1"] = pyrado.load(parsed_args.prefix+"qfcn_target1.pt", ex_dir, obj=self.qfcn_targ_1, verbose=True)
+        extra["qfcn_target2"] = pyrado.load(parsed_args.prefix+"qfcn_target2.pt", ex_dir, obj=self.qfcn_targ_2, verbose=True)
+        self.qfcn_1 = deepcopy(self.qfcn_targ_1).train()
+        self.qfcn_2 = deepcopy(self.qfcn_targ_2).train()
+        self.qfcn_targ_1 = self.qfcn_targ_1.eval()  # will not be trained using an optimizer
+        self.qfcn_targ_2 = self.qfcn_targ_2.eval()  # will not be trained using an optimizer
 
         return env, policy, extra

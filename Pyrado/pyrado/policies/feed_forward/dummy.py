@@ -76,8 +76,12 @@ class DummyPolicy(Policy):
 
     def forward(self, obs: to.Tensor = None) -> to.Tensor:
         # Observations are ignored
-        act = to.from_numpy(self.env_spec.act_space.sample_uniform())
-        return act.to(dtype=to.get_default_dtype(), device=self.device)
+        if len(obs.shape)==1:
+            act = to.from_numpy(self.env_spec.act_space.sample_uniform())
+            return act.to(dtype=to.get_default_dtype(), device=self.device)
+        else:
+            act = to.stack([to.from_numpy(self.env_spec.act_space.sample_uniform()) for i in range(obs.shape[0])], dim=0)
+            return act.to(dtype=to.get_default_dtype(), device=self.device)
 
 
 class RecurrentDummyPolicy(RecurrentPolicy):

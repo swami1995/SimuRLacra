@@ -204,6 +204,13 @@ def get_argparser() -> argparse.ArgumentParser:
         help="(partial) name of the policy to load, e.g. 'argmax_policy', or 'iter_0_policy' " "(default: policy)",
     )
     parser.add_argument(
+        "--prefix",
+        type=str,
+        nargs="?",
+        default="",
+        help="(partial) prefix of the policy/valuefn to load, e.g. 'argmax_', or 'iter_', or 'best_' " "(default: '')",
+    )
+    parser.add_argument(
         "-s",
         "--save",
         action="store_true",

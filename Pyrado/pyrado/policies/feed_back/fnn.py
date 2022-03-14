@@ -190,7 +190,7 @@ class FNNPolicy(Policy):
 
         # Create the feed-forward neural network
         self.net = FNN(
-            input_size=spec.obs_space.flat_dim,
+            input_size=spec.obs_space.flat_dim+1,
             output_size=spec.act_space.flat_dim,
             hidden_sizes=hidden_sizes,
             hidden_nonlin=hidden_nonlin,
@@ -213,6 +213,8 @@ class FNNPolicy(Policy):
 
     def forward(self, obs: to.Tensor) -> to.Tensor:
         # Get the action from the owned FNN
+
+        obs = to.cat([obs[:,0].unsqueeze(-1), to.sin(obs[:, 1]).unsqueeze(-1), to.cos(obs[:, 1]).unsqueeze(-1), obs[:, 2:]], dim=1)
         return self.net(obs)
 
 
