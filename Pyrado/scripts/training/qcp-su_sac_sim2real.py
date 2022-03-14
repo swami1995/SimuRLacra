@@ -29,6 +29,7 @@
 """
 Train an agent to solve the Quanser CartPole swing-up task using Proximal Policy Optimization.
 """
+import os
 import torch
 import torch as to
 from torch.optim import lr_scheduler
@@ -53,7 +54,7 @@ if __name__ == "__main__":
     seed_str = f"seed-{args.seed}" if args.seed is not None else None
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T1200", f"{SAC.name}", seed_str)
+    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "sim2real_long_maxa6_T300", f"{SAC.name}", seed_str)
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)

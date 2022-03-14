@@ -182,8 +182,16 @@ class ValueBased(Algorithm, ABC):
         obs = np.stack([traj['data_pos'][:,2], traj['data_theta'][:,2], traj['data_vel'][:,2], traj['data_thetadot'][:,2], acts], axis=1)
         return obs
 
-    def load_memory(self, traj_path=''):
+    def compute_th_ddot(self, traj):
+        thetadot = traj['data_thetadot'][:,2]
+        theta_ddot = thetadot[1:] - thetadot[:-1]
+        theta_ddot = theta_ddot/0.05
+        theta_ddot = np.insert(theta_ddot, 0, 0)
+        return theta_ddot
+        
+    def load_memory(self, traj_path='episodes/15_rand_actdiff2_long_maxa6_T300_rlclip05/'):
         from os import listdir
+        import scipy.io as io
         from os.path import isfile, join
         traj_files = [join(traj_path, f) for f in listdir(traj_path) if isfile(join(traj_path, f))]
         # trajs = [ ]
@@ -199,7 +207,7 @@ class ValueBased(Algorithm, ABC):
                 obs = torch.tensor(obs_hist_np).requires_grad_(True)
                 act = torch.tensor(act_hist_np).requires_grad_(True)
                 th_ddot = torch.tensor(th_ddot_hist)
-                next_obs, rew, dones, info = env.step_diff_state(obs, act, th_ddot)
+                next_obs, rew, dones, info = self._env_sim.step_diff_state(obs, act, th_ddot)
                 obs_grad = torch.stack([torch.cat(torch.autograd.grad(next_obs[:,i].sum(), [obs, act], retain_graph=True), dim=-1) for i in range(next_obs.shape[1])], dim=1).detach().numpy()
                 rew_grad = torch.cat(torch.autograd.grad(rew.sum(), [obs, act]), dim=-1).detach().numpy()
                 rew_np = rew.detach().numpy()
@@ -218,7 +226,7 @@ class ValueBased(Algorithm, ABC):
             else:
                 obs = torch.tensor(obs_hist_np).requires_grad_(True)
                 act = torch.tensor(act_hist_np).requires_grad_(True)
-                next_obs, rew, dones, info = env.step_diff_state(obs, act)
+                next_obs, rew, dones, info = self._env_sim.step_diff_state(obs, act)
                 rew_np = rew.detach().numpy()
                 obs_hist = []
                 act_hist = []
@@ -239,7 +247,7 @@ class ValueBased(Algorithm, ABC):
             continuous=False,
             )
             rollouts.append(res)
-        self._memory.push(results)
+        self._memory.push(rollouts)
 
     def tranform_rollouts(self, ros):
         from os import listdir
