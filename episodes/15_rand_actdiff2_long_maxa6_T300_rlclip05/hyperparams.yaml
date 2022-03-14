@@ -1,0 +1,35 @@
+env:
+  dt: 0.05
+  long: true
+  max_steps: 300
+  simple_dynamics: false
+  wild_init: true
+seed: None
+policy:
+  shared_hidden_nonlin: <built-in method tanh of type object at 0x7f919fd29cc0>
+  shared_hidden_sizes:
+  - 64
+  - 64
+qfcn:
+  hidden_nonlin: <built-in method tanh of type object at 0x7f919fd29cc0>
+  hidden_sizes:
+  - 64
+  - 64
+algo:
+  batch_size: 512
+  ent_coeff_init: 0.3
+  eval_intvl: 1
+  gamma: 0.9844224855479998
+  learn_ent_coeff: true
+  lr: 0.0005
+  max_grad_norm: 1.5
+  max_iter: 300
+  memory_size: 1000000
+  min_steps: 9000
+  num_init_memory_steps: 36000
+  num_updates_per_step: 1000
+  num_workers: 1
+  standardize_rew: false
+  target_update_intvl: 1
+  tau: 0.99
+algo_name: sac
