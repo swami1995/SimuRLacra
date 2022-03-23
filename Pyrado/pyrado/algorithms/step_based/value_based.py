@@ -30,9 +30,12 @@ import os.path as osp
 from abc import ABC, abstractmethod
 from math import ceil
 from typing import Optional, Union
-
+import os
 import numpy as np
+import matplotlib.pyplot as plt
 import ipdb
+import psutil
+
 import pyrado
 from pyrado.algorithms.base import Algorithm
 from pyrado.algorithms.utils import ReplayMemory
@@ -45,6 +48,7 @@ from pyrado.sampling.parallel_rollout_sampler import ParallelRolloutSampler, Par
 from pyrado.utils.input_output import print_cbt_once
 from pyrado.sampling.step_sequence import StepSequence
 import torch
+import gc
 
 class ValueBased(Algorithm, ABC):
     """Base class of all value-based algorithms"""
@@ -147,7 +151,7 @@ class ValueBased(Algorithm, ABC):
             self._policy,
             num_workers=num_workers,
             min_steps=None,
-            min_rollouts=100,
+            min_rollouts=5,
             show_progress_bar=True,
         )
 
@@ -298,6 +302,7 @@ class ValueBased(Algorithm, ABC):
             complete=True,  # the rollout function always returns complete paths
             )
             rollouts.append(res)
+            # ipdb.set_trace()
         return rollouts
 
     def step(self, snapshot_mode: str, meta_info: dict = None):
@@ -307,6 +312,7 @@ class ValueBased(Algorithm, ABC):
             # Sample steps and store them in the replay memory
             if self._fill_with_init_sampler:
                 ros = self.sampler_init.sample()
+                # self.tranform_rollouts(ros)
                 self._fill_with_init_sampler = not self._use_trained_policy_for_refill
             else:
                 # Save old bounds from the sampler
@@ -326,7 +332,9 @@ class ValueBased(Algorithm, ABC):
 
         # Log metrics computed from the old policy (before the update)
         if self._curr_iter % self.logger.print_intvl == 0:
+            print('before test: ', psutil.Process().memory_info().rss / (1024 * 1024))
             ros = self.sampler_eval.sample()
+            print('after test: ', psutil.Process().memory_info().rss / (1024 * 1024))
             rets = [ro.undiscounted_return() for ro in ros]
             ret_max = np.max(rets)
             ret_med = np.median(rets)
@@ -349,6 +357,8 @@ class ValueBased(Algorithm, ABC):
 
         # Use data in the memory to update the policy and the Q-functions
         self.update()
+        if self.num_update_calls % 2==0:
+            self.plot_vfunc_state_space(str(self.num_update_calls))
 
     def step_sim2sim(self, snapshot_mode: str, meta_info: dict = None):
         if self._memory.isempty:
@@ -392,14 +402,90 @@ class ValueBased(Algorithm, ABC):
         self.logger.add_value("num total samples", self._cnt_samples)
 
         # self.plot_trajectories(ros)
-        self.plot_trajectories_actions(ros)
+        # self.plot_trajectories_actions(ros)
         # Save snapshot data
         self.make_snapshot(snapshot_mode, float(ret_avg), meta_info)
 
         # Use data in the memory to update the policy and the Q-functions
         self.num_batch_updates = cnt_samples_step
         self.batch_size_used = min(len(self._memory)-2, self.batch_size)
-        # self.update()
+        self.update()
+
+    def plot_vfunc_state_space(self, num_update_calls = None):
+        num_samples = 600*600
+        sample_states = torch.rand((num_samples, 2))*2-1
+        sample_states[:,0] *= np.pi
+        sample_states[:,1] *= 3.5*np.pi
+        if self._env.obs_space.shape[0]== 5:
+            sample_states = torch.stack([sample_states[:,0]*0, sample_states[:,0], sample_states[:,1]*0, sample_states[:,1], sample_states[:,1]*0], dim=1)
+        else:
+            sample_states = torch.stack([sample_states[:,0]*0, sample_states[:,0], sample_states[:,1]*0, sample_states[:,1]], dim=1)
+        V = []
+        states = []
+        # model = model.cpu()
+        # ipdb.set_trace()
+        with torch.no_grad():
+            # if True:
+            #     for i in range(num_samples//self.batch_size):
+            #         state = sample_states[i*batch_size: (i+1)*batch_size]
+
+            #         # state = torch.stack(state1)
+            #         # for buffer_i in buffer[i*self.batch_size: (i+1)*self.batch_size]:
+            #             # for j in range(len(buffer_i)):
+            #             # state1[j].append(buffer_i[j])
+            #         # for j in range(len(state1)):
+            #         #     try:
+            #         #         torch.stack(state1[j])
+            #         #     except:
+            #         #         ipdb.set_trace()
+            #         # try:
+            #         #     state, _, _, _, _ = map(torch.stack, buffer[i*self.batch_size: (i+1)*self.batch_size])
+            #         # except:
+            #         #     ipdb.set_trace()
+
+            #         states.append(state)
+            #         V.append(model(state).squeeze().cpu())
+            #         # if i%20==0:
+            #         #     print(i, ) 
+            # V = torch.cat(V, dim=0).cpu()*0 + 1
+            action, _ = self.policy(sample_states)
+            sample_state_action = torch.cat([sample_states, action], dim=1)
+            V = torch.clamp(self.qfcn_1(sample_state_action).squeeze().cpu(), 0, 20000)
+        # states = torch.cat(states, dim=0).cpu().detach().requires_grad_(False)
+        states = sample_states
+        # print("buffer size", states.shape[0])
+        # ipdb.set_trace()
+        plt.clf()
+        plt.scatter(states[:,1], states[:,3], c=V, s=2, cmap='gray')
+        # plt.scatter(samples[:,0], samples[:,1], c='r', s=2)
+        # plt.scatter(new_samples[:,0], new_samples[:,1], c='b', s=2)
+        # for i in range(samples.shape[0]):
+        #     plt.plot([samples[i,0], new_samples[i,0]], [samples[i,1], new_samples[i,1]], linewidth=1)
+        plt.ylim([-3.5*np.pi, 3.5*np.pi])
+        plt.xlim([-np.pi, np.pi])
+            
+        # path = env_name + 'explore_backward/rrt_lqr_act_cost005_rand200_top20_step13_5200switchonpolicy'
+        if num_update_calls is not None:
+            path = osp.join(self.save_dir, 'qfn_plots/')
+            # path = self.save_dir + 
+            os.makedirs(path, exist_ok=True)
+            plt.savefig(osp.join(path, f'val_states_{num_update_calls}.png'))
+            return None
+
+        path = 'saved_plots/qfn_plots/'
+        os.makedirs(path, exist_ok=True)
+        # plt.savefig(path + 'val_states_rlvgi_euler405_clamped.png')
+        # plt.savefig(path + 'val_states_dt05_rlvgi_rk4_parrol_MAXA6_fixed4_unclamped.png')
+        plt.savefig(path + 'val_states_sac_dt01_rl_rk4_parrol_MAXA6_fixed4_nosmooth_hidden256_clamped.png')
+        # plt.savefig(path + 'val_states_dt05_rl_euler_MAXA6_unclamped.png')
+        # del V
+        # del states
+        # del sample_states
+        # plt.clf()
+        # plt.close()
+        # gc.collect()
+        ipdb.set_trace()
+
 
     def plot_trajectories(self, ros):
         rets = [ro.undiscounted_return() for ro in ros]
@@ -417,8 +503,21 @@ class ValueBased(Algorithm, ABC):
         plt.plot(np.arange(len(states))*dt, states[:,3], label='thdot')
         plt.plot(np.arange(len(states))*dt, states[:,4] + actions[:,0], label='act')
         plt.legend()
-        plt.savefig('saved_plots/states_grad_vi_wild_false.png')
+        plt.savefig('saved_plots/states_rl_rk405_wildmod_debug_min.png')
 
+        for i in range(10):
+            plt.clf()
+            ro_min = ros[i]
+            states = ro_min.observations[:-1]
+            actions = ro_min.actions
+            plt.plot(np.arange(len(states))*dt, states[:,0], label='x')
+            plt.plot(np.arange(len(states))*dt, states[:,1], label='th')
+            plt.plot(np.arange(len(states))*dt, states[:,2], label='xdot')
+            plt.plot(np.arange(len(states))*dt, states[:,3], label='thdot')
+            plt.plot(np.arange(len(states))*dt, states[:,4] + actions[:,0], label='act')
+            plt.legend()
+            plt.savefig(f'saved_plots/states_rl_rk405_wildmod_debug{i}.png')
+        ipdb.set_trace()
     def plot_trajectories_actions(self, ros):
         rets = [ro.undiscounted_return() for ro in ros]
         for ro in ros:

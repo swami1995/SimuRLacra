@@ -285,6 +285,11 @@ def get_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--device", type=str, default="cpu", help="device (either 'cpu' or 'cuda') to use for PyTorch (default: 'cpu')"
     )
+    parser.add_argument(
+        "--alg_str", 
+        type=str,
+        default="alg",
+        help="algorithm string used to create folder")
 
     segment_group = parser.add_mutually_exclusive_group(required=False)
     segment_group.add_argument(

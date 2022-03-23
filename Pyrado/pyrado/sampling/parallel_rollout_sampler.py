@@ -41,7 +41,7 @@ from tqdm import tqdm
 import pyrado
 from pyrado.environments.base import Env
 from pyrado.policies.base import Policy
-from pyrado.sampling.rollout import rollout, rollout_tensor, rollout_tensor_full
+from pyrado.sampling.rollout import rollout, rollout_tensor, rollout_tensor_full, random_sampler_tensor_full
 from pyrado.sampling.sampler import SamplerBase
 from pyrado.sampling.sampler_pool import SamplerPool
 from pyrado.sampling.step_sequence import StepSequence
@@ -427,6 +427,11 @@ class ParallelRolloutSamplerTensor(SamplerBase, Serializable):
                 return [res,]
             if self.min_steps is None:
                 # raise NotImplementedError
+                # pb.total = self.min_rollouts
+                # res = rollout_tensor_full(self.env, self.policy, eval=eval, seed=self._seed, sub_seed=self._sample_count, sub_sub_seed=1, bsz=36, max_steps=1e6, num_rollouts=self.min_rollouts, pb=pb)
+                # if pb is not None:
+                #     pb.update(self.min_rollouts)
+                # return res
                 if init_states is None and domain_params is None:
                     # Simply run min_rollouts times
                     func = partial(_ps_run_one, eval=eval)
@@ -462,17 +467,19 @@ class ParallelRolloutSamplerTensor(SamplerBase, Serializable):
                     while counter < n or (self.min_rollouts is not None and len(result) < self.min_rollouts):
                         # Invoke once
                         # res = rollout_tensor
-                        res = rollout_tensor(self.env, self.policy, eval=eval, seed=self._seed, sub_seed=self._sample_count, sub_sub_seed=len(result) + 1)#, bsz=8, max_steps=n)
-                        n_done = len(res)
-                        # n_done = sum([len(r) for r in res])
+                        res = rollout_tensor_full(self.env, self.policy, eval=eval, seed=self._seed, sub_seed=self._sample_count, sub_sub_seed=len(result) + 1, bsz=32, max_steps=n, pb=pb)
+                        # res = random_sampler_tensor_full(self.env, self.policy, eval=eval, seed=self._seed, sub_seed=self._sample_count, sub_sub_seed=len(result) + 1, bsz=32, max_steps=n, pb=pb)
+                        # res = rollout_tensor(self.env, self.policy, eval=eval, seed=self._seed, sub_seed=self._sample_count, sub_sub_seed=len(result) + 1)#, bsz=8, max_steps=n)
+                        # n_done = len(res)
+                        n_done = sum([len(r) for r in res])
                         # _ps_run_one_init_state(self.env, self.policy, num=len(result) + 1)
 
                         # Add to result and record increment
-                        result.append(res)
-                        # result+=res
+                        # result.append(res)
+                        result+=res
                         counter += n_done
-                        if pb is not None:
-                            pb.update(n_done)
+                        # if pb is not None:
+                        #     pb.update(n_done)
                         # return result and total
                         # print(counter)
                     return result

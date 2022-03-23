@@ -98,12 +98,12 @@ class ObsActCatWrapper(EnvWrapper):
         :param obs: observation from the inner environment
         :return: changed observation vector
         """
-        return np.append(obs, act)
-        # return obs
+        # return np.append(obs, act)
+        return obs
 
     def _process_obs_tensor(self, obs, act):
-        return torch.cat([obs, act], dim=-1)
-        # return obs
+        # return torch.cat([obs, act], dim=-1)
+        return obs
 
     def _process_obs_space(self, space: BoxSpace) -> BoxSpace:
         """
@@ -112,7 +112,7 @@ class ObsActCatWrapper(EnvWrapper):
         :param space: inner env observation space
         :return: action space to report for this env
         """
-        # return space
+        return space
         if not isinstance(space, BoxSpace):
             raise NotImplementedError("Only implemented ActNormWrapper._process_act_space() for BoxSpace!")
         if 'act' not in space.labels:
@@ -144,12 +144,22 @@ class ObsActCatWrapper(EnvWrapper):
         # Return processed observation
         return self._process_obs(init_obs, self.act_prev)
 
+    # def step(self, act: np.ndarray) -> tuple:
+    #     # Step inner environment
+    #     # By not using _wrapped_env directly, we can mix this class with EnvWrapperAct
+        
+    #     obs, rew, done, info = super().step(act + self.act_prev)
+    #     self.act_prev = np.maximum(np.minimum(act + self.act_prev, 1),-1)
+    #     # Return processed observation
+    #     state = self._wrapped_env._wrapped_env.state
+    #     return self._process_obs(state, self.act_prev), rew, done, info
+
     def step(self, act: np.ndarray) -> tuple:
         # Step inner environment
         # By not using _wrapped_env directly, we can mix this class with EnvWrapperAct
         
-        obs, rew, done, info = super().step(act + self.act_prev)
-        self.act_prev = np.maximum(np.minimum(act + self.act_prev, 1),-1)
+        obs, rew, done, info = super().step(act)# + self.act_prev)
+        self.act_prev = np.maximum(np.minimum(act, 1),-1)
         # Return processed observation
         state = self._wrapped_env._wrapped_env.state
         return self._process_obs(state, self.act_prev), rew, done, info
@@ -161,13 +171,22 @@ class ObsActCatWrapper(EnvWrapper):
         act_prev = dclamp(act + obs[:, -1:], torch.tensor(-1), torch.tensor(1))
         return self._process_obs_tensor(obsn, act_prev), rew, done, info
 
+    # def step_diff_state(self, obs, act, th_ddot=None):
+    #     obs_state = obs[:, :-1]
+    #     obsn, rew, done, info = super().step_diff_state(obs_state, obs[:, -1:], act, th_ddot)
+    #     # obsn, rew, done, info = super().step_diff_state(obs_state, act, th_ddot)
+    #     # act = dclamp(act, torch.tensor(-0.5), torch.tensor(0.5))
+    #     act_prev = dclamp(act + obs[:, -1:], torch.tensor(-1), torch.tensor(1))
+    #     return self._process_obs_tensor(obsn, act_prev), rew, done, info
+
     def step_diff_state(self, obs, act, th_ddot=None):
-        obs_state = obs[:, :-1]
-        obsn, rew, done, info = super().step_diff_state(obs_state, obs[:, -1:], act, th_ddot)
+        obs_state = obs#[:, :-1]
+        obsn, rew, done, info = super().step_diff_state(obs_state, act, act*0, th_ddot)
         # obsn, rew, done, info = super().step_diff_state(obs_state, act, th_ddot)
-        act = dclamp(act, torch.tensor(-0.5), torch.tensor(0.5))
-        act_prev = dclamp(act + obs[:, -1:], torch.tensor(-1), torch.tensor(1))
-        return self._process_obs_tensor(obsn, act_prev), rew, done, info
+        # act = dclamp(act, torch.tensor(-0.5), torch.tensor(0.5))
+        # act_prev = dclamp(act + obs[:, -1:], torch.tensor(-1), torch.tensor(1))
+        # return self._process_obs_tensor(obsn, act_prev), rew, done, info
+        return obsn, rew, done, info
 
     def step11(self, act):
         obs_state = torch.tensor(self._wrapped_env._wrapped_env.state).unsqueeze(0).requires_grad_(True).float()
@@ -191,7 +210,7 @@ class ObsActCatWrapper(EnvWrapper):
         :param space: inner env action space
         :return: action space to report for this env
         """
-        return BoxSpace(space.bound_lo*0.5, space.bound_up*0.5, labels=space.labels)
+        return BoxSpace(space.bound_lo, space.bound_up, labels=space.labels)
 
     @property
     def act_space(self) -> BoxSpace:

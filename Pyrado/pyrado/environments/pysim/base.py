@@ -228,7 +228,9 @@ class SimPyEnv(SimEnv, Serializable):
         self._curr_step += 1
 
         # Check if the task or the environment is done
+        # try:
         done = self._task.is_done(self.state)
+        
         if self._curr_step >= self._max_steps:
             done = True
 

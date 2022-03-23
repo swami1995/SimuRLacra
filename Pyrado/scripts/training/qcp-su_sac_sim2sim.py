@@ -53,29 +53,30 @@ if __name__ == "__main__":
     seed_str = f"seed-{args.seed}" if args.seed is not None else None
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T300_sim2sim", f"{SAC.name}", seed_str)
+    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T300_sim2sim", f"{SAC.name}_rl2init_qcp-su_long_maxa6_T1200_sac_dt01_rlvgiact_rk4_parrol_MAXA6_fixed4_nosmooth_hidden128_2022-03-21_17-56-56_blue", seed_str)
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
 
     # Environment
     env_hparams = dict(
-        dt=1 / 20.0,
-        max_steps=300,
+        dt=1 / 100.0,
+        max_steps=1200,
         long=True,
         simple_dynamics=False,
         wild_init='False',#'mod',#'False',
-        # mass=0.48,
+        mass=0.48,
     )
     env_sim_hparams = dict(
-        dt=1 / 20.0,
-        max_steps=300,
+        dt=1 / 100.0,
+        max_steps=1200,
         long=True,
         simple_dynamics=False,
         wild_init='False',#'mod',#'False',
         # mass=0.48,
         # mass=0.38,
     )
+    hidden_size = 128
     env = QCartPoleSwingUpSim(**env_hparams)
     env_sim = QCartPoleSwingUpSim(**env_sim_hparams)
     # env = ObsVelFiltWrapper(env, idcs_pos=["theta", "alpha"], idcs_vel=["theta_dot", "alpha_dot"])
@@ -85,7 +86,7 @@ if __name__ == "__main__":
     env_sim = ObsActCatWrapper(env_sim)
 
     # Policy
-    policy_hparam = dict(shared_hidden_sizes=[64, 64], shared_hidden_nonlin=to.tanh)
+    policy_hparam = dict(shared_hidden_sizes=[hidden_size, hidden_size], shared_hidden_nonlin=to.tanh)
     policy = TwoHeadedFNNPolicy(spec=env.spec, **policy_hparam)
     # obs = torch.tensor(env.reset()).unsqueeze(0).float().requires_grad_(True)
     # act = (torch.ones(1,1)*0.1).requires_grad_(True)
@@ -93,7 +94,7 @@ if __name__ == "__main__":
     # embed()
 
     # Critic
-    qfnc_param = dict(hidden_sizes=[64, 64], hidden_nonlin=to.tanh)  # FNN
+    qfnc_param = dict(hidden_sizes=[hidden_size, hidden_size], hidden_nonlin=to.tanh)  # FNN
     # ipdb.set_trace()
     combined_space = BoxSpace.cat([env.obs_space, env.act_space])
     q1 = FNNPolicy(spec=EnvSpec(combined_space, ValueFunctionSpace), **qfnc_param)
@@ -110,7 +111,7 @@ if __name__ == "__main__":
         ent_coeff_init=0.3,
         learn_ent_coeff=True,
         target_update_intvl=1,
-        num_init_rollouts=4,
+        num_init_rollouts=2,
         num_init_memory_steps=120 * env.max_steps,
         standardize_rew=False,
         min_steps=30 * env.max_steps,
@@ -123,7 +124,7 @@ if __name__ == "__main__":
     )
     algo = SAC(ex_dir, env, policy, q1, q2, **algo_hparam)
     algo.load_snapshot(args)
-    
+    # algo.plot_vfunc_state_space()
 
     # Save the hyper-parameters
     save_dicts_to_yaml(

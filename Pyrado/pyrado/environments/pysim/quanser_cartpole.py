@@ -77,6 +77,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
         self._long = long
         self._wild_init = wild_init
         self._x_buffer = 0.15  # [m]
+        self._integrator = 'rk4'
 
         # Call SimPyEnv's constructor
         super().__init__(dt, max_steps, task_args)
@@ -154,6 +155,15 @@ class QCartPoleSim(SimPyEnv, Serializable):
         self.J_eq = m_cart + (eta_g * K_g ** 2 * J_m) / r_mp ** 2  # equiv. inertia [kg]
 
     def _step_dynamics(self, u: np.ndarray):
+        s_augmented = np.array([self.state[0], self.state[1], self.state[2], self.state[3], u[0]])
+        if self._integrator=='rk4':
+            next_state, th_ddot = rk4(self._dynamics, s_augmented, [0, self._dt], self._th_ddot)
+        else:
+            next_state, th_ddot = euler(self._dynamics, s_augmented, [0, self._dt], self._th_ddot)
+        self._th_ddot = th_ddot
+        self.state = np.asarray(next_state[:-1], dtype=np.float)
+
+    def _dynamics(self, s_augmented: np.ndarray, dt, _th_ddot):
         gravity_const = self.domain_param["gravity_const"]
         l_p = self.domain_param["pole_length"]
         m_p = self.domain_param["pole_mass"]
@@ -168,7 +178,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
         B_p = self.domain_param["pole_damping"]
         mu_c = self.domain_param["cart_friction_coeff"]
 
-        x, th, x_dot, th_dot = self.state
+        x, th, x_dot, th_dot, u = s_augmented
         sin_th = np.sin(th)
         cos_th = np.cos(th)
         m_tot = m_c + m_p
@@ -189,7 +199,7 @@ class QCartPoleSim(SimPyEnv, Serializable):
 
         else:
             # Force normal to the rail causing the Coulomb friction
-            f_normal = m_tot * gravity_const - m_p * l_p / 2 * (sin_th * self._th_ddot + cos_th * th_dot ** 2)
+            f_normal = m_tot * gravity_const - m_p * l_p / 2 * (sin_th * _th_ddot + cos_th * th_dot ** 2)
             if f_normal < 0:
                 # The normal force on the cart is negative, i.e. it is lifted up. This can be cause by a very high
                 # angular momentum of the pole. Here we neglect this effect.
@@ -211,11 +221,13 @@ class QCartPoleSim(SimPyEnv, Serializable):
             ]
         )
         # Compute acceleration from linear system of equations: M * x_ddot = rhs
-        x_ddot, self._th_ddot = np.linalg.solve(M, rhs)
+        x_ddot, th_ddot = np.linalg.solve(M, rhs)
 
         # Integration step (symplectic Euler)
-        self.state[2:] += np.array([float(x_ddot), float(self._th_ddot)]) * self._dt  # next velocity
-        self.state[:2] += self.state[2:] * self._dt  # next position
+        th_dot = th_dot + float(th_ddot) * self._dt  # next velocity
+        x_dot = x_dot + float(x_ddot) * self._dt
+        # self.state[:2] += self.state[2:] * self._dt  # next position
+        return np.array([x_dot, th_dot, x_ddot, th_ddot, u*0]), th_ddot
 
 
     def step_diff(self, obs, act, th_ddot=None):
@@ -273,8 +285,8 @@ class QCartPoleSim(SimPyEnv, Serializable):
 
     def limit_act_diff_clamp(self, act_diff):
         ## NOTE: only for 1D act spaces. Might be problematic if blindly copied to higher dimensional action spaces
-        return torch.clamp(act_diff, self.act_space.bound_lo.item()*0.5, self.act_space.bound_up.item()*0.5)
-        # return act_diff
+        # return torch.clamp(act_diff, self.act_space.bound_lo.item()*0.5, self.act_space.bound_up.item()*0.5)
+        return act_diff
 
     def is_done(self, state):
         done = (1-((self._state_space_bound_lo_tensor < state).float()*(self._state_space_bound_up_tensor > state).float()).prod(dim=-1)).bool()
@@ -308,7 +320,44 @@ class QCartPoleSim(SimPyEnv, Serializable):
         reward = torch.exp(-reward)
         return reward
 
-    def _step_dynamics_diff(self, obs, u, act_unclamped, _th_ddot=None, state_based=False):
+    def _step_dynamics_diff(self, obs, u, act_unclamped, _th_ddot=None, state_based=False, integrator='rk4'):
+        if _th_ddot is not None:
+            _th_ddot_tensor = _th_ddot
+        else:
+            _th_ddot_tensor = self._th_ddot_tensor
+
+        if state_based:
+            x, th, x_dot, th_dot = obs[:,0], obs[:,1], obs[:,2], obs[:,3]
+            # cos_th = torch.cos(th)
+            # sin_th = torch.sin(th)
+        else:
+            x, x_dot, th_dot = obs[:,0], obs[:,3], obs[:,4]
+            cos_th = obs[:, 2]
+            sin_th = obs[:, 1]
+            mask_cos = (cos_th>0).float()
+            mask_sin = (sin_th>0).float()
+            # th = (sin_th + cos_th)/2#
+            th = ((mask_sin*2-1)*torch.acos(cos_th) + (mask_cos*2-1)*torch.asin(sin_th) + np.pi * (2*mask_sin-1) * (1-mask_cos))/2
+        u = u.squeeze(-1)
+        state = torch.stack([x, th, x_dot, th_dot], dim=-1)
+        rew = self.rew_fn(state, act_unclamped)
+        s_augmented = torch.stack([x, th, x_dot, th_dot, u], dim=-1) #_th_ddot_tensor
+        if self._integrator=='rk4':
+            next_state, _th_ddot_tensor = rk4(self._dynamics_diff, s_augmented, [0, self._dt], _th_ddot_tensor)
+        else:
+            next_state, _th_ddot_tensor = euler(self._dynamics_diff, s_augmented, [0, self._dt], _th_ddot_tensor)
+        # _th_ddot_tensor = next_state[:, -1]
+        next_state = next_state[:, :-1]
+        obs = torch.stack([next_state[:,0], torch.sin(next_state[:, 1]), torch.cos(next_state[:, 1]), next_state[:, 2], next_state[:, 3]], dim=-1)
+        done = self.is_done(next_state)
+        if _th_ddot is None:
+            self._th_ddot_tensor = _th_ddot_tensor.detach().clone()
+        if state_based:
+            return next_state, rew, done, {'th_ddot': _th_ddot_tensor}
+        else:
+            return obs, rew, done, {'th_ddot': _th_ddot_tensor}
+
+    def _dynamics_diff(self, s_augmented, dt, _th_ddot_tensor):
         gravity_const = self.domain_param["gravity_const"]
         l_p = self.domain_param["pole_length"]
         m_p = self.domain_param["pole_mass"]
@@ -323,27 +372,10 @@ class QCartPoleSim(SimPyEnv, Serializable):
         B_p = self.domain_param["pole_damping"]
         mu_c = self.domain_param["cart_friction_coeff"]
 
-        if _th_ddot is not None:
-            _th_ddot_tensor = _th_ddot
-        else:
-            _th_ddot_tensor = self._th_ddot_tensor
-
-        if state_based:
-            x, th, x_dot, th_dot = obs[:,0], obs[:,1], obs[:,2], obs[:,3]
-            cos_th = torch.cos(th)
-            sin_th = torch.sin(th)
-        else:
-            x, x_dot, th_dot = obs[:,0], obs[:,3], obs[:,4]
-            cos_th = obs[:, 2]
-            sin_th = obs[:, 1]
-            mask_cos = (cos_th>0).float()
-            mask_sin = (sin_th>0).float()
-            # th = (sin_th + cos_th)/2#
-            th = ((mask_sin*2-1)*torch.acos(cos_th) + (mask_cos*2-1)*torch.asin(sin_th) + np.pi * (2*mask_sin-1) * (1-mask_cos))/2
-        u = u.squeeze(-1)
-        rew = self.rew_fn(torch.stack([x, th, x_dot, th_dot], dim=-1), act_unclamped)
         m_tot = m_c + m_p
 
+        x, th, x_dot, th_dot, u = s_augmented[:,0], s_augmented[:,1], s_augmented[:,2], s_augmented[:,3], s_augmented[:, 4]#, s_augmented[:, 5]
+        sin_th, cos_th = torch.sin(th), torch.cos(th)
         # Apply a voltage dead zone, i.e. below a certain amplitude the system is will not move.
         # This is a very simple model of static friction.
         # if (
@@ -392,17 +424,11 @@ class QCartPoleSim(SimPyEnv, Serializable):
         x_ddot, th_ddot = inv[:, 0], inv[:, 1]
 
         # Integration step (symplectic Euler)
-        vel = torch.stack([x_dot, th_dot], dim=-1) + inv*self.dt# np.array([x_ddot, self._th_ddot_tensor]) * self._dt  # next velocity
+        vel = torch.stack([x_dot, th_dot], dim=-1) + inv*self._dt# np.array([x_ddot, self._th_ddot_tensor]) * self._dt  # next velocity
         pos = torch.stack([x, th], dim=-1) + vel * self._dt  # next position
-        obs = torch.stack([pos[:,0], torch.sin(pos[:, 1]), torch.cos(pos[:, 1]), vel[:, 0], vel[:, 1]], dim=-1)
-        next_state = torch.cat([pos, vel], dim=-1)
-        done = self.is_done(next_state)
-        if _th_ddot is None:
-            self._th_ddot_tensor = th_ddot.detach().clone()
-        if state_based:
-            return next_state, rew, done, {'th_ddot': th_ddot}
-        else:
-            return obs, rew, done, {'th_ddot': th_ddot}
+        # derivs = torch.stack([x_dot, th_dot, inv[:,0], inv[:,1], u*0, (th_ddot-_th_ddot_tensor)/dt], dim=-1)
+        derivs = torch.stack([vel[:,0], vel[:,1], inv[:,0], inv[:,1], u*0], dim=-1)
+        return derivs, th_ddot
 
     def _init_anim(self):
         # Import PandaVis Class
@@ -532,14 +558,25 @@ class QCartPoleSwingUpSim(QCartPoleSim, Serializable):
 
         self._state_space = BoxSpace(min_state, max_state, labels=["x", "theta", "x_dot", "theta_dot"])
         self._init_space = BoxSpace(-max_init_state, max_init_state, labels=["x", "theta", "x_dot", "theta_dot"])
+        # self._init_space = BoxSpace(-max_init_state, max_init_state, labels=["x", "theta", "x_dot", "theta_dot"])
         self._state_space_bound_lo_tensor = torch.Tensor(self._state_space.bound_lo).to(self._th_ddot_tensor)
         self._state_space_bound_up_tensor = torch.Tensor(self._state_space.bound_up).to(self._th_ddot_tensor)
+
+    def random_states(self, bsz):
+        states = np.random.rand(bsz, 4)*2 - 1
+        states[:, 0] *= self.domain_param["rail_length"] / 2.0 - self._x_buffer
+        states[:, 1] *= np.pi
+        states[:, 2] *= self.domain_param["rail_length"]
+        states[:, 3] *= 11
+        return states
+        
 
     def _create_task(self, task_args: dict) -> Task:
         # Define the task including the reward function
         state_des = task_args.get("state_des", np.array([0.0, np.pi, 0.0, 0.0]))
 
         Q = task_args.get("Q", np.diag([3e-1, 5e-1, 5e-3, 1e-3]))
+        # Q = task_args.get("Q", np.diag([1e-1, 1.0, 5e-3, 1e-3]))
         R = task_args.get("R", np.diag([1e-3]))
 
         self.state_des = torch.Tensor(state_des).to(self._th_ddot_tensor).unsqueeze(0)
@@ -548,3 +585,91 @@ class QCartPoleSwingUpSim(QCartPoleSim, Serializable):
         self._state_space_bound_lo_tensor = self._state_space_bound_lo_tensor.to(self._th_ddot_tensor)
         self._state_space_bound_up_tensor = self._state_space_bound_up_tensor.to(self._th_ddot_tensor)
         return RadiallySymmDesStateTask(self.spec, state_des, ExpQuadrErrRewFcn(Q, R), idcs=[1])
+
+
+
+def rk4(derivs, y0, t, th_ddot0):
+    """
+    Integrate 1D or ND system of ODEs using 4-th order Runge-Kutta.
+    This is a toy implementation which may be useful if you find
+    yourself stranded on a system w/o scipy.  Otherwise use
+    :func:`scipy.integrate`.
+
+    Args:
+        derivs: the derivative of the system and has the signature ``dy = derivs(yi)``
+        y0: initial state vector
+        t: sample times
+        args: additional arguments passed to the derivative function
+        kwargs: additional keyword arguments passed to the derivative function
+
+    Example 1 ::
+        ## 2D system
+        def derivs(x):
+            d1 =  x[0] + 2*x[1]
+            d2 =  -3*x[0] + 4*x[1]
+            return (d1, d2)
+        dt = 0.0005
+        t = arange(0.0, 2.0, dt)
+        y0 = (1,2)
+        yout = rk4(derivs6, y0, t)
+
+    If you have access to scipy, you should probably be using the
+    scipy.integrate tools rather than this function.
+    This would then require re-adding the time variable to the signature of derivs.
+
+    Returns:
+        yout: Runge-Kutta approximation of the ODE
+    """
+
+    # try:
+    #     Ny = len(y0)
+    # except TypeError:
+    #     yout = np.zeros((len(t),), np.float_)
+    # else:
+    #     yout = np.zeros((len(t), Ny), np.float_)
+
+    # yout = torch.zeros((len(t),y0.shape[0], y0.shape[1])).to(y0)
+    yout = []
+    th_ddots = []
+    yout.append(y0)
+    th_ddots.append(th_ddot0)
+
+    for i in np.arange(len(t) - 1):
+
+        thist = t[i]
+        dt = t[i + 1] - thist
+        dt2 = dt / 2.0
+        y0 = yout[i]
+        th_ddot0 = th_ddots[i]
+        # y0.requires_grad_(True)
+        k1, th_ddot1 = derivs(y0, dt, th_ddot0)
+        # ipdb.set_trace()
+        k2, th_ddot2 = derivs(y0 + dt2 * k1, dt, th_ddot1)
+        k3, th_ddot3 = derivs(y0 + dt2 * k2, dt, th_ddot2)
+        k4, th_ddot4 = derivs(y0 + dt * k3, dt, th_ddot3)
+        yout.append(y0 + dt / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4))
+        # th_ddots.append((th_ddot1 + 2*th_ddot2 + 2*th_ddot3 + th_ddot4)/6)
+        th_ddots.append((th_ddot1 + th_ddot2 + th_ddot3 + th_ddot4)/4)
+    # We only care about the final timestep and we cleave off action value which will be zero
+    # ipdb.set_trace()
+    return yout[-1], th_ddots[-1]
+
+def euler(derivs, y0, t, th_ddot0):
+
+    yout = []
+    thddots = []
+    yout.append(y0)
+    thddots.append(th_ddot0)
+
+    for i in np.arange(len(t) - 1):
+
+        thist = t[i]
+        dt = t[i + 1] - thist
+        y0 = yout[i]
+        th_ddot0 = th_ddots[i]
+        k1, th_ddot = derivs(y0, dt, th_ddot0)
+        yout.append(y0 + dt * k1)
+        th_ddots.append(th_ddot)
+    # We only care about the final timestep and we cleave off action value which will be zero
+    # ipdb.set_trace()
+    return yout[-1], th_ddots[-1]

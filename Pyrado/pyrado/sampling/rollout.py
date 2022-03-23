@@ -34,6 +34,7 @@ import torch as to
 import torch.nn as nn
 from matplotlib import pyplot as plt
 from tabulate import tabulate
+import gc
 
 import pyrado
 from pyrado.environment_wrappers.action_delay import ActDelayWrapper
@@ -396,6 +397,8 @@ def rollout_tensor(
     state_hist = []
     env_info_hist = []
     t_hist = []
+    th_ddot_hist = []
+    num_steps_ep = 0
     if isinstance(policy, Policy):
         if policy.is_recurrent:
             hidden_hist = []
@@ -412,8 +415,8 @@ def rollout_tensor(
             dt_remainder_hist = []
 
     # Override the number of steps to execute
-    if max_steps is not None:
-        env.max_steps = max_steps
+    # if max_steps is not None:
+    #     env.max_steps = max_steps
 
     # Set all rngs' seeds (call before resetting)
     if seed is not None:
@@ -463,7 +466,7 @@ def rollout_tensor(
     # ----------
 
     # Terminate if the environment signals done, it also keeps track of the time
-    while not (done and stop_on_done) and env.curr_step < env.max_steps:
+    while not (done and stop_on_done) and env.curr_step < env.max_steps and num_steps_ep < env.max_steps:
         # Record step start time
         if record_dts or render_mode.video:
             t_start = time.time()  # dual purpose
@@ -520,8 +523,10 @@ def rollout_tensor(
             act_to=act_to.unsqueeze(0)
         act = act_to.detach().cpu().numpy()[0]  # environment operates on numpy arrays
         act_to=act_to.requires_grad_(True)
+        th_ddot = env._wrapped_env._wrapped_env._th_ddot
         # ipdb.set_trace()
         obs_next, rew, done, env_info = env.step_diff_state(obs_to,act_to)
+        num_steps_ep += 1
         obs_grad = to.cat([to.cat(to.autograd.grad(obs_next[0,i], [obs_to, act_to], retain_graph=True),dim=1) for i in range(obs_next.shape[1])], dim=0)
         rew_grad = to.cat(to.autograd.grad(rew.sum(), [obs_to, act_to]), dim=1)
         obs_next, rew, done = obs_next.squeeze(0).cpu().detach().numpy(), rew.item(), done.item()
@@ -546,6 +551,7 @@ def rollout_tensor(
         rew_hist.append(rew)
         state_hist.append(state)
         env_info_hist.append(env_info)
+        th_ddot_hist.append(th_ddot)
         if record_dts:
             dt_policy_hist.append(dt_policy)
             dt_step_hist.append(dt_step)
@@ -597,6 +603,7 @@ def rollout_tensor(
     # Add final observation to observations list
     obs_hist.append(obs)
     state_hist.append(env.state.copy())
+    th_ddot_hist.append(env._wrapped_env._wrapped_env._th_ddot)
 
     # Return result object
     res = StepSequence(
@@ -608,6 +615,7 @@ def rollout_tensor(
         time=t_hist,
         rollout_info=rollout_info,
         env_infos=env_info_hist,
+        th_ddot=th_ddot_hist,
         complete=True,  # the rollout function always returns complete paths
     )
 
@@ -645,6 +653,8 @@ def rollout_tensor_full(
     sub_seed: Optional[int] = None,
     sub_sub_seed: Optional[int] = None,
     bsz: int = 1,
+    num_rollouts: int = None,
+    pb = None,
 ) -> StepSequence:
     """
     Perform a rollout (i.e. sample a trajectory) in the given environment using given policy.
@@ -684,6 +694,8 @@ def rollout_tensor_full(
     state_hist = [[] for i in range(bsz)]
     env_info_hist = [[] for i in range(bsz)]
     t_hist = []#[[] for i in range(bsz)]
+    th_ddot_hist = [[] for i in range(bsz)]
+    num_steps_ep = np.zeros(bsz)
     if isinstance(policy, Policy):
         if policy.is_recurrent:
             hidden_hist = [[] for i in range(bsz)]
@@ -712,6 +724,7 @@ def rollout_tensor_full(
         reset_kwargs = dict()
 
     obs = np.stack([np.zeros(env.obs_space.shape) if no_reset else env.reset(**reset_kwargs) for i in range(bsz)], axis=0)
+    num_rols = 0 
 
     # Setup rollout information
     rollout_info = dict(env_name=env.name, env_spec=env.spec)
@@ -746,7 +759,8 @@ def rollout_tensor_full(
     t_hist.append(t)
     if record_dts:
         t_post_step = time.time()  # first sample of remainder is useless
-    env._wrapped_env._wrapped_env._th_ddot_tensor = to.zeros((bsz,))
+    # env._wrapped_env._wrapped_env.
+    _th_ddot_tensor = to.zeros((bsz,))
     # inf_states = to.ones_like(state_eval[:,:1])
     # ----------
     # Begin loop
@@ -806,19 +820,26 @@ def rollout_tensor_full(
         # Record time after the action was calculated
         if record_dts:
             t_post_policy = time.time()
-
+        # ipdb.set_trace()
         # Ask the environment to perform the simulation step
         obs_to = obs_to.requires_grad_(True)
         if len(act_to.shape)==1:
             ipdb.set_trace()
         act = act_to.detach().cpu().numpy()  # environment operates on numpy arrays
         act_to=act_to.requires_grad_(True)
-        obs_nexts, rews, dones, env_info = env.step_diff_state(obs_to,act_to)
+        th_ddot = _th_ddot_tensor.detach().numpy()
+        # ipdb.set_trace()
+        obs_nexts, rews, dones, env_info = env.step_diff_state(obs_to,act_to, _th_ddot_tensor)
+        num_steps_ep += 1
+        dones_fin = to.tensor(num_steps_ep>=env.max_steps).to(dones.device)
+        dones = to.logical_or(dones_fin, dones)
         obs_grad = to.stack([to.cat(to.autograd.grad(obs_nexts[:,i].sum(), [obs_to, act_to], retain_graph=True),dim=1) for i in range(obs_nexts.shape[1])], dim=1)
         rew_grad = to.cat(to.autograd.grad(rews.sum(), [obs_to, act_to]), dim=1).unsqueeze(1)
+        _th_ddot_tensor = env_info['th_ddot'].detach().clone()
         if dones.any():
             new_obs = np.stack([np.zeros(env.obs_space.shape) if no_reset else env.reset(**reset_kwargs) for i in range((dones).sum())], axis=0)
-            env._wrapped_env._wrapped_env._th_ddot_tensor[dones] = to.zeros((dones.sum(),))
+            _th_ddot_tensor[dones] = to.zeros((dones.sum(),))
+            num_steps_ep[dones] *= 0
         obs_next, rew, done = obs_nexts.squeeze(0).cpu().detach().numpy(), rews.detach().numpy(), dones.detach().numpy()
         
         # print(obs_next.shape)
@@ -839,13 +860,16 @@ def rollout_tensor_full(
             act_app_hist[i].append(act_app)
             rew_hist[i].append(rew[i])
             state_hist[i].append(state)
-            env_info['obs_grad'] = obs_grad[i].detach().numpy()
-            env_info['rew_grad'] = rew_grad[i].detach().numpy()
-            env_info_hist[i].append(env_info)
+            env_grads = {}
+            env_grads['obs_grad'] = obs_grad[i].detach().numpy()
+            env_grads['rew_grad'] = rew_grad[i].detach().numpy()
+            env_info_hist[i].append(env_grads)
+            th_ddot_hist[i].append(th_ddot[i])
             if done[i]:
                 try:
-                    obs_hist[i].append(obs[i])
+                    obs_hist[i].append(obs_next[i])
                     state_hist[i].append(state)
+                    th_ddot_hist[i].append(env_info['th_ddot'][i].detach().clone())
                     t_hist.append(t)
                     res = StepSequence(
                         observations=obs_hist[i],
@@ -856,15 +880,31 @@ def rollout_tensor_full(
                         time=t_hist[-len(obs_hist[i]):],
                         rollout_info=rollout_info,
                         env_infos=env_info_hist[i],
+                        th_ddot=th_ddot_hist[i],
                         complete=True,  # the rollout function always returns complete paths
                     )
                     results.append(res)
+                    if res.undiscounted_return() >env.max_steps or len(res)>env.max_steps:
+                        ipdb.set_trace()
+
                     obs_hist[i] = []
                     act_hist[i] = []
                     act_app_hist[i] = []
                     rew_hist[i] = []
                     state_hist[i] = []
                     env_info_hist[i] = []
+                    th_ddot_hist[i] = []
+                    num_rols += 1
+                    gc.collect()
+                    if pb is not None:
+                        if num_rollouts is not None:
+                            pb.update(1)
+                        else:
+                            pb.update(len(res))
+                    if num_rollouts is not None and num_rols >= num_rollouts:
+                        if not no_close:
+                            env.close()
+                        return results
                 except:
                     ipdb.set_trace()
 
@@ -882,6 +922,10 @@ def rollout_tensor_full(
                     if done[i]:
                         results[-1].add_data("head_2", head_2_hist[i])
                         head_2_hist[i] = []
+                        # if num_rols >= num_rollouts:
+                        #     if not no_close:
+                        #         env.close()
+                        #     return results
         if record_dts:
             dt_policy_hist.append(dt_policy)
             dt_step_hist.append(dt_step)
@@ -927,6 +971,7 @@ def rollout_tensor_full(
         if len(obs_hist[i]) >0:
             obs_hist[i].append(obs[i])
             state_hist[i].append(state)
+            th_ddot_hist[i].append(_th_ddot_tensor.detach().numpy()[i])
 
             # # Return result object
             try:
@@ -939,12 +984,20 @@ def rollout_tensor_full(
                     time=t_hist[-len(obs_hist[i]):],
                     rollout_info=rollout_info,
                     env_infos=env_info_hist[i],
+                    th_ddot=th_ddot_hist[i],
                     complete=False,  # the rollout function always returns complete paths
                 )
                 results.append(res)
+                gc.collect()
+                if res.undiscounted_return() >1200 or len(res)>1200:
+                    ipdb.set_trace()
             except:
                 ipdb.set_trace()
-
+            if pb is not None:
+                if num_rollouts is not None:
+                    pb.update(1)
+                else:
+                    pb.update(len(res))
             # Add special entries to the resulting rollout
             if isinstance(policy, Policy):
                 if policy.is_recurrent:
@@ -962,6 +1015,128 @@ def rollout_tensor_full(
 
     return results
 
+
+def random_sampler_tensor_full(
+    env: Env,
+    policy: Union[nn.Module, Policy, Callable],
+    eval: bool = False,
+    max_steps: Optional[int] = None,
+    reset_kwargs: Optional[dict] = None,
+    render_mode: RenderMode = RenderMode(),
+    render_step: int = 1,
+    no_reset: bool = False,
+    no_close: bool = False,
+    record_dts: bool = False,
+    stop_on_done: bool = True,
+    seed: Optional[int] = None,
+    sub_seed: Optional[int] = None,
+    sub_sub_seed: Optional[int] = None,
+    bsz: int = 1,
+    num_rollouts: int = None,
+    pb = None,
+) -> StepSequence:
+    if num_rollouts is not None:
+        max_steps = env.max_steps * num_rollouts
+
+    rollout_info = dict(env_name=env.name, env_spec=env.spec)
+    if isinstance(inner_env(env), SimEnv):
+        rollout_info["domain_param"] = env.domain_param
+
+    if isinstance(policy, Policy):
+        # Reset the policy, i.e. the exploration strategy in case of step-based exploration.
+        # In case the environment is a simulation, the current domain parameters are passed to the policy. This allows
+        # the policy policy to update it's internal model, e.g. for the energy-based swing-up controllers
+        if isinstance(env, SimEnv):
+            policy.reset(domain_param=env.domain_param)
+        else:
+            policy.reset()
+
+        # Set dropout and batch normalization layers to the right mode
+        if eval:
+            policy.eval()
+        else:
+            policy.train()
+
+        # Check for recurrent policy, which requires initializing the hidden state
+        if policy.is_recurrent:
+            hidden = policy.init_hidden()
+
+        # state = env.state.copy()
+
+    obs = env._wrapped_env._wrapped_env.random_states(max_steps)
+    obs_to = to.from_numpy(obs).type(to.get_default_dtype())  # policy operates on PyTorch tensors
+    with to.no_grad():
+        if isinstance(policy, Policy):
+            if policy.is_recurrent:
+                if isinstance(getattr(policy, "policy", policy), TwoHeadedPolicy):
+                    act_to, head_2_to, hidden_next = policy(obs_to, hidden)
+                else:
+                    act_to, hidden_next = policy(obs_to, hidden)
+            else:
+                if isinstance(getattr(policy, "policy", policy), TwoHeadedPolicy):
+                    act_to, head_2_to = policy(obs_to)
+                else:
+                    act_to = policy(obs_to)
+        else:
+            # If the policy ist not of type Policy, it should still operate on PyTorch tensors
+            act_to = policy(obs_to)
+
+    obs_to = obs_to.requires_grad_(True)
+    if len(act_to.shape)==1:
+        ipdb.set_trace()
+    act = act_to.detach().cpu().numpy()  # environment operates on numpy arrays
+    act_to=act_to.requires_grad_(True)
+    # th_ddot = _th_ddot_tensor.detach().numpy()
+    # ipdb.set_trace()
+    obs_nexts, rews, dones, env_info = env.step_diff_state(obs_to,act_to)
+    obs_grad = to.stack([to.cat(to.autograd.grad(obs_nexts[:,i].sum(), [obs_to, act_to], retain_graph=True),dim=1) for i in range(obs_nexts.shape[1])], dim=1)
+    rew_grad = to.cat(to.autograd.grad(rews.sum(), [obs_to, act_to]), dim=1).unsqueeze(1)
+    # _th_ddot_tensor = env_info['th_ddot'].detach().clone()
+    # if dones.any():
+    #     new_obs = np.stack([np.zeros(env.obs_space.shape) if no_reset else env.reset(**reset_kwargs) for i in range((dones).sum())], axis=0)
+    #     # _th_ddot_tensor[dones] = to.zeros((dones.sum(),))
+    #     num_steps_ep[dones] *= 0
+    obs_next, rew, done = obs_nexts.squeeze(0).cpu().detach().numpy(), rews.detach().numpy(), dones.detach().numpy()
+
+    obs_hist = []
+    act_hist = []
+    act_app_hist = []
+    rew_hist = []
+    next_obs_hist = []
+    # done_hist = []
+    # state_hist[i] = []
+    env_info_hist = []
+    results = []
+    # th_ddot_hist[i] = []
+    for i in range(len(obs)):
+        act_app = env.limit_act(act[i])
+
+        # Record data
+        obs_hist.append(obs[i])
+        next_obs_hist.append(obs_next[i])
+        act_hist.append(act[i])
+        act_app_hist.append(act_app)
+        rew_hist.append(rew[i])
+        # done_hist.append(done[i])
+        env_grads = {}
+        env_grads['obs_grad'] = obs_grad[i].detach().numpy()
+        env_grads['rew_grad'] = rew_grad[i].detach().numpy()
+        env_info_hist.append(env_grads)
+
+    res = StepSequence(
+        observations=obs_hist,
+        actions=act_hist,
+        actions_applied=act_app_hist,
+        rewards=rew_hist,
+        dones=done,
+        rollout_info=rollout_info,
+        env_infos=env_info_hist,
+        next_obs=next_obs_hist,
+        complete=False,  # the rollout function always returns complete paths
+    )
+    results.append(res)            
+    gc.collect()
+    return results
 
 def after_rollout_query(
     env: Env, policy: Policy, rollout: StepSequence

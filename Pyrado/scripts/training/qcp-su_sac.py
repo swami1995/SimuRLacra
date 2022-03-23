@@ -53,7 +53,7 @@ if __name__ == "__main__":
     seed_str = f"seed-{args.seed}" if args.seed is not None else None
 
     # Experiment (set seed before creating the modules)
-    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T1200", f"{SAC.name}", seed_str)
+    ex_dir = setup_experiment(QCartPoleSwingUpSim.name + "_long_maxa6_T1200", f"{SAC.name}_dt05_rl_rk4_randsampl_MAXA6_fixed4_nosmooth_hidden128", seed_str)#trial", seed_str)nosmooth_cost1e11e0
 
     # Set seed if desired
     pyrado.set_seed(args.seed, verbose=True)
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         dt=1 / 20.0,
         max_steps=300,
         long=True,
-        simple_dynamics=False,
+        simple_dynamics=True,
         wild_init=True,
     )
     env = QCartPoleSwingUpSim(**env_hparams)
@@ -72,7 +72,8 @@ if __name__ == "__main__":
     env = ObsActCatWrapper(env)
 
     # Policy
-    policy_hparam = dict(shared_hidden_sizes=[64, 64], shared_hidden_nonlin=to.tanh)
+    hidden_size = 128
+    policy_hparam = dict(shared_hidden_sizes=[hidden_size, hidden_size], shared_hidden_nonlin=to.tanh, use_cuda=args.device=='cuda')
     policy = TwoHeadedFNNPolicy(spec=env.spec, **policy_hparam)
     # obs = torch.tensor(env.reset()).unsqueeze(0).float().requires_grad_(True)
     # act = (torch.ones(1,1)*0.1).requires_grad_(True)
@@ -80,7 +81,7 @@ if __name__ == "__main__":
     # embed()
 
     # Critic
-    qfnc_param = dict(hidden_sizes=[64, 64], hidden_nonlin=to.tanh)  # FNN
+    qfnc_param = dict(hidden_sizes=[hidden_size, hidden_size], hidden_nonlin=to.tanh, use_cuda=args.device=='cuda')  # FNN
     # ipdb.set_trace()
     combined_space = BoxSpace.cat([env.obs_space, env.act_space])
     q1 = FNNPolicy(spec=EnvSpec(combined_space, ValueFunctionSpace), **qfnc_param)
@@ -90,7 +91,7 @@ if __name__ == "__main__":
     algo_hparam = dict(
         gamma=0.9844224855479998,
         memory_size=1000000,
-        max_iter=300,
+        max_iter=100,
         num_updates_per_step=1000,
         tau=0.99,
         ent_coeff_init=0.3,
@@ -115,6 +116,6 @@ if __name__ == "__main__":
         dict(algo=algo_hparam, algo_name=algo.name),
         save_dir=ex_dir,
     )
-
+    # ipdb.set_trace()
     # Jeeeha
     algo.train(snapshot_mode="latest_and_best", seed=args.seed)
